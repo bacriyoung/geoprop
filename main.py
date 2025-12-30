@@ -3,6 +3,7 @@ import os
 import yaml
 import argparse
 import torch
+import datetime  # [新增]
 
 # ==============================================================================
 # [核心修复] 路径注入
@@ -31,7 +32,6 @@ def load_config(args):
     target_dataset = cfg['project']['target_dataset']
     
     # 动态定位 dataset config: geoprop/config/{name}/{name}.yaml
-    # 使用 os.path.dirname(__file__) 确保路径是相对于 main.py 的绝对路径
     base_conf_dir = os.path.dirname(os.path.abspath(args.global_config))
     dataset_config_path = os.path.join(
         base_conf_dir, 
@@ -49,13 +49,16 @@ def load_config(args):
     cfg['dataset'] = dataset_cfg['dataset']
     return cfg
 
-def prepare_output_dirs(cfg):
+def prepare_output_dirs(cfg, timestamp):
     """
-    在 geoprop/outputs/{dataset_name} 下生成目录结构
+    在 geoprop/outputs/{dataset_name}/{timestamp} 下生成目录结构
+    这样每次运行都会有独立的文件夹，不会覆盖。
     """
-    # [核心修改] 强制在 main.py 同级目录下生成 outputs
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    base_output = os.path.join(root_dir, "outputs", cfg['dataset']['name'])
+    
+    # [核心修改] 目录结构增加时间戳层级
+    # 例如: outputs/s3dis/20251230_153000/
+    base_output = os.path.join(root_dir, "outputs", cfg['dataset']['name'], timestamp)
     
     dirs = {
         'root': base_output,
@@ -76,20 +79,27 @@ def main():
     parser.add_argument('--global_config', type=str, default=default_config)
     args = parser.parse_args()
     
+    # 0. 生成任务开始时间戳
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     # 1. 加载配置
     cfg = load_config(args)
     
-    # 2. 准备输出目录 (geoprop/outputs/...)
-    out_dirs = prepare_output_dirs(cfg)
+    # 2. 准备输出目录 (带时间戳)
+    out_dirs = prepare_output_dirs(cfg, timestamp)
     cfg['paths'] = out_dirs 
     
     # 更新 project.root_output 以便 trainer 使用
     cfg['project']['root_output'] = out_dirs['root']
     
-    # 3. 初始化日志
-    logger = setup_logger(out_dirs['logs'])
+    # 3. 初始化日志 (文件名带时间戳)
+    log_filename = f"pipeline_{timestamp}.log"
+    logger = setup_logger(out_dirs['logs'], log_filename=log_filename)
+    
+    logger.info(f"Task Started at: {timestamp}")
     logger.info(f"Loaded Config: {args.global_config}")
-    logger.info(f"Output Root: {out_dirs['root']}")
+    logger.info(f"Output Directory: {out_dirs['root']}")
+    logger.info(f"Log File: {os.path.join(out_dirs['logs'], log_filename)}")
     
     trained_model = None
     
@@ -101,15 +111,22 @@ def main():
     # Phase 2: Inference
     if cfg['inference']['enable']:
         if trained_model is None:
-            # 优先查找当前 output 目录下的模型
+            # 优先查找当前 output 目录下的模型 (本次训练生成的)
             local_ckpt = os.path.join(out_dirs['root'], "best_model.pth")
-            # 其次查找 config 中指定的 checkpoint_path
+            
+            # 其次查找 config 中指定的 checkpoint_path (外部指定的)
             cfg_ckpt = cfg['inference'].get('checkpoint_path')
             
-            ckpt_path = local_ckpt if os.path.exists(local_ckpt) else cfg_ckpt
+            # 逻辑优化：如果本次没训练(local不存在)，且配置了外部路径，则用外部路径
+            if os.path.exists(local_ckpt):
+                ckpt_path = local_ckpt
+            elif cfg_ckpt and os.path.exists(cfg_ckpt):
+                ckpt_path = cfg_ckpt
+            else:
+                ckpt_path = None
             
-            if not ckpt_path or not os.path.exists(ckpt_path):
-                logger.error(f"Training skipped and No Checkpoint found at: {ckpt_path}")
+            if not ckpt_path:
+                logger.error(f"Training skipped and No Checkpoint found at local: {local_ckpt} or config: {cfg_ckpt}")
                 return
             
             logger.info(f"Loading weights from: {ckpt_path}")

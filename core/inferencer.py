@@ -14,7 +14,7 @@ from geoprop.utils.visualizer import generate_viz
 
 def process_room_full_pipeline(cfg, model, data, return_all=False):
     """
-    完整的 S1 -> S4 推理流水线
+    完整的 S1 -> S4 推理流水线 (Fully Optimized with Confidence Awareness)
     """
     N = len(data)
     xyz_full = data[:, :3]
@@ -41,7 +41,6 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     lbl_filtered_sparse = np.full(N, -100, dtype=int)
     
     min_c, max_c = xyz_full.min(0), xyz_full.max(0)
-    
     rounds = cfg['inference']['tta']['rounds'] if cfg['inference']['tta']['enabled'] else 1
     
     for t in range(rounds):
@@ -75,7 +74,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     if t == 0:
                         pred_block = np.argmax(prob_np, axis=1)
                         lbl_direct[mask] = pred_block
-                        lbl_filtered_sparse = confidence_filter.run(cfg['inference']['filter_knn'], 
+                        lbl_filtered_sparse = confidence_filter.run(cfg['inference']['confidence_filter'], 
                                                                     rec, bdy, b_rgb, 
                                                                     pred_block, mask, lbl_filtered_sparse)
 
@@ -86,12 +85,16 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     lbl_s2[valid_tta] = np.argmax(accum_probs[valid_tta]/accum_counts[valid_tta, None], axis=1)
     lbl_s2 = confidence_filter.knn_fill(xyz_full, lbl_s2)
 
-    # 3. Dynamic Result Construction
+    # 计算全局置信度图
+    confidence_map = np.zeros(N, dtype=np.float32)
+    confidence_map[valid_tta] = np.max(accum_probs[valid_tta] / accum_counts[valid_tta, None], axis=1)
+
+    # 3. 构建结果字典 (Confidence Injection)
     result_stages = OrderedDict()
     result_stages["Direct Inference"] = lbl_direct
     lbl_current = lbl_direct
 
-    if cfg['inference']['filter_knn']['enabled']:
+    if cfg['inference']['confidence_filter']['enabled']:
         result_stages["Confidence Filter"] = lbl_s1_1
         lbl_current = lbl_s1_1
 
@@ -99,19 +102,38 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
         result_stages["TTA Integration"] = lbl_s2
         lbl_current = lbl_s2
 
-    lbl_geom = geometric_gating.run(cfg['inference']['voxel_gating'], xyz_full, rgb_full, lbl_current)
-    if cfg['inference']['voxel_gating']['enabled']:
+    # --- Geometric Gating (S2.1) ---
+    lbl_geom = geometric_gating.run(
+        cfg['inference']['geometric_gating'], 
+        xyz_full, 
+        rgb_full, 
+        lbl_current,
+        confidence=confidence_map
+    )
+    if cfg['inference']['geometric_gating']['enabled']:
         result_stages["Geometric Gating"] = lbl_geom
         shape_guide = lbl_geom
+        lbl_current = lbl_geom # S2.1 的结果作为 S3 的 Base
     else:
         shape_guide = lbl_current
 
-    lbl_graph = graph_refine.run(cfg['inference']['graph_refine'], xyz_full, rgb_full, 
-                                 lbl_current, shape_guide, seed_mask, lbl)
+    # --- Graph Refine (S3) [优化点] ---
+    # 传入 confidence_map 实现保护机制
+    lbl_graph = graph_refine.run(
+        cfg['inference']['graph_refine'], 
+        xyz_full, 
+        rgb_full, 
+        lbl_current, # Base Input (S2.1 or S2)
+        shape_guide, # Shape Guide
+        seed_mask, 
+        lbl,
+        confidence=confidence_map # <--- 关键修改
+    )
     if cfg['inference']['graph_refine']['enabled']:
         result_stages["Graph Refine"] = lbl_graph
         lbl_current = lbl_graph
 
+    # --- Spatial Smooth (S4) ---
     lbl_final = spatial_smooth.run(cfg['inference']['spatial_smooth'], xyz_full, lbl_current)
     if cfg['inference']['spatial_smooth']['enabled']:
         result_stages["Spatial Smooth"] = lbl_final
@@ -123,37 +145,20 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     else:
         return lbl_current
 
-# ==============================================================================
-# [FIXED] 补全缺失的函数，供 trainer.py 调用
-# ==============================================================================
 def validate_full_scene_logic(model, cfg, all_files):
-    """
-    全图滑窗验证逻辑
-    """
     model.eval()
     evaluator = IoUCalculator()
-    
-    # 临时禁用 TTA 以加速验证 (只跑第一轮)
-    # 我们创建一个临时的 cfg 副本，或者在 process_room_full_pipeline 内部处理
-    # 这里为了简单，直接跑全流程，但你可以通过修改 cfg['inference']['tta']['enabled'] = False 来加速
-    
     for f in all_files:
         data = np.load(f)
-        # 获取结果字典
         res_dict = process_room_full_pipeline(cfg, model, data, return_all=True)
-        
-        # 验证指标：优先使用 Confidence Filter 的结果，因为它比 Direct 更稳定
+        # 验证指标：优先使用 Confidence Filter
         if "Confidence Filter" in res_dict:
             pred = res_dict["Confidence Filter"]
         else:
             pred = res_dict["Direct Inference"]
-            
         evaluator.update(pred, res_dict['GT'])
-        
     _, miou, _ = evaluator.compute()
     return miou
-
-# ==============================================================================
 
 def run_inference(cfg, model):
     logger = logging.getLogger("geoprop")

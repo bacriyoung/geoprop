@@ -1,5 +1,5 @@
 # ==============================================================================
-# Global Configuration
+# Global Configuration (V17.3 Graph Refine Optimized)
 # ==============================================================================
 
 # --- 项目设置 ---
@@ -7,8 +7,6 @@ project:
   name: "geoprop_production"
   seed: 42
   device: "cuda"
-  
-  # [核心] 指定当前使用的数据集名称 (对应 config/NAME/NAME.yaml)
   target_dataset: "s3dis"
 
 # --- 训练通用设置 ---
@@ -19,13 +17,12 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  # 验证策略
   val_interval: 1
   val_mode: "block_proxy" 
   val_sample_batches: 100
 
   augmentation:
-    enabled: true
+    enabled: false
     jitter_sigma: 0.001
     jitter_clip: 0.005
 
@@ -40,39 +37,46 @@ model:
 # --- 推理通用设置 ---
 inference:
   enable: true
-  # 模型权重 (若训练开启，会自动覆盖为最新训练出的权重)
-  checkpoint_path: "./outputs/s3dis/best_model.pth" 
+  checkpoint_path: "/home/work/research/Geoprop/outputs/geoprop/best_model.pth" 
   
-  # [新功能] 输出开关
-  save_img: true       # 是否生成可视化图片
-  save_npy: true       # 是否保存伪标签数据 (.npy)
+  save_img: true
+  save_npy: true
   
   vis_downsample: 60000
   vis_point_size: 20.0
 
-  # 模块开关
+  # [S1 & S2]
   tta:
-    enabled: true
+    enabled: false
     rounds: 5
     jitter: 0.005
 
+  # [S1.1]
   confidence_filter:
-    enabled: true
+    enabled: false
     rec_err_strict: 0.08
     rec_err_loose: 0.15
 
-  voxel_gating:
+  # [S2.1] Geometric Gating (置信度保护)
+  geometric_gating:
     enabled: true
     voxel_n: 400
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
+    confidence_threshold: 0.65
 
+  # [S3] Graph Refine (优化：新增置信度保护)
   graph_refine:
     enabled: true
     fine_voxel_n: 80
     fine_weight_xyz: 10.0
     k_neighbors: 8
+    # [新增] 保护阈值。
+    # 概率 > 0.65 的点即使被图割判定为异类，也会被强制保留。
+    # 这能防止细小的椅子腿被大面积地板同化。
+    confidence_threshold: 0.65
 
+  # [S4]
   spatial_smooth:
     enabled: true
     k_neighbors: 32
