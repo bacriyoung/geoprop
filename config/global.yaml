@@ -10,7 +10,7 @@ project:
   target_dataset: "s3dis"
 
 train:
-  enable: true
+  enable: false
   epochs: 50
   batch_size: 8
   learning_rate: 0.001
@@ -45,7 +45,7 @@ inference:
   # [Mode Selection]
   # false (Default): Production Mode. Only final result saved.
   # true: Ablation Mode. Intermediate results saved based on 'save_output' flags below.
-  ablation_mode: false
+  ablation_mode: true
 
   # [NEW] --- Module: Direct Inference (Base Model Output) ---
   direct_inference:
@@ -53,7 +53,7 @@ inference:
 
   # --- Module: Test-Time Augmentation ---
   tta:
-    enabled: false
+    enabled: true
     rounds: 5
     jitter: 0.005
     save_output: true 
@@ -72,7 +72,7 @@ inference:
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
     confidence_threshold: 0.65
-    save_output: true
+    save_output: false
 
   # --- Module: Graph Refine ---
   graph_refine:

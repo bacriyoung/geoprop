@@ -60,7 +60,7 @@ geoprop/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/geoprop.git
+git clone https://github.com/bacriyoung/geoprop.git
 cd geoprop
 
 # 2. Install dependencies
