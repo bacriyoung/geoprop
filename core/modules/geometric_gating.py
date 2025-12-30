@@ -4,7 +4,7 @@ from sklearn.neighbors import KDTree
 from scipy import sparse
 
 def compute_geometry_features(xyz, k=20):
-    if len(xyz) > 20000: 
+    if len(xyz) > 20000:
         idx = np.random.choice(len(xyz), 20000, replace=False)
         tree = KDTree(xyz[idx])
     else:
@@ -18,7 +18,10 @@ def run(cfg, xyz, rgb, labels, confidence=None):
     if not cfg['enabled']:
         return labels.copy()
 
+    num_classes = cfg.get('num_classes', 13)
+
     pla, ver = compute_geometry_features(xyz)
+    
     valid_mask = labels != -100
     if not valid_mask.any(): return labels
     
@@ -26,14 +29,16 @@ def run(cfg, xyz, rgb, labels, confidence=None):
     p_valid = pla[valid_mask]
     v_valid = ver[valid_mask]
     
-    counts = np.bincount(l_valid, minlength=13)
-    p_sums = np.bincount(l_valid, weights=p_valid, minlength=13)
-    v_sums = np.bincount(l_valid, weights=v_valid, minlength=13)
+    counts = np.bincount(l_valid, minlength=num_classes)
+    p_sums = np.bincount(l_valid, weights=p_valid, minlength=num_classes)
+    v_sums = np.bincount(l_valid, weights=v_valid, minlength=num_classes)
     
     safe_counts = counts.copy()
     safe_counts[safe_counts==0] = 1
     proto_pla = p_sums / safe_counts
     proto_ver = v_sums / safe_counts
+    
+    protos = {c: {'pla': proto_pla[c], 'ver': proto_ver[c]} for c in range(num_classes)}
     
     rgb_n = rgb/255.0 if rgb.max()>1.1 else rgb
     feats = np.concatenate([xyz * cfg['weights']['xyz'], rgb_n * cfg['weights']['rgb']], 1)
@@ -46,7 +51,6 @@ def run(cfg, xyz, rgb, labels, confidence=None):
     avg_p = np.bincount(sv, weights=pla, minlength=n_sv) / sv_counts
     avg_v = np.bincount(sv, weights=ver, minlength=n_sv) / sv_counts
     
-    # calculate w
     safe_labels = labels.copy()
     safe_labels[labels == -100] = 0 
     pp_p = proto_pla[safe_labels]
@@ -54,7 +58,7 @@ def run(cfg, xyz, rgb, labels, confidence=None):
     
     w = np.exp(-cfg['gate_strength'] * (np.abs(pp_p - avg_p[sv]) + np.abs(pp_v - avg_v[sv])))
     w[labels == -100] = 0
-
+    
     mask = labels != -100
     sv_valid = sv[mask]
     lbl_valid = labels[mask]
@@ -62,19 +66,17 @@ def run(cfg, xyz, rgb, labels, confidence=None):
     
     if len(sv_valid) == 0: return labels
 
-    # sparse matrix: rows=SV, cols=Label, values=Weight Sum
-    mat = sparse.coo_matrix((w_valid, (sv_valid, lbl_valid)), shape=(n_sv, 13)).tocsr()
+    mat = sparse.coo_matrix((w_valid, (sv_valid, lbl_valid)), shape=(n_sv, num_classes)).tocsr()
     
-    dense_sums = mat.toarray() # (n_sv, 13)
-    best_labels = np.argmax(dense_sums, axis=1) # (n_sv,)
-
+    dense_sums = mat.toarray() 
+    best_labels = np.argmax(dense_sums, axis=1)
+    
     has_votes = dense_sums.sum(axis=1) > 0
     
     refined_candidate = labels.copy()
     update_mask = has_votes[sv]
     refined_candidate[update_mask] = best_labels[sv[update_mask]]
 
-    # Confidence Protection
     if confidence is not None:
         threshold = cfg.get('confidence_threshold', 0.65)
         protect_mask = confidence > threshold

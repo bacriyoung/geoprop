@@ -11,6 +11,7 @@ logs/
 runs/
 wandb/
 checkpoints/
+datasets/
 
 # --- 3D/遥感 大数据文件 ---
 *.pth

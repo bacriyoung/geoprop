@@ -4,14 +4,16 @@
 
 dataset:
   name: "s3dis"
-  root_dir: "/home/work/research/PointNATmambaV6/PointNAT-main/data/S3DIS/s3disfull/raw"
-  
+  root_dir: "datasets/S3DIS/s3disfull/raw"
+
   num_classes: 13
+  
   num_points: 24000
   block_size: 2.0
   label_ratio: 0.001
 
+
   split:
-    train_areas: [1, 2, 3, 4, 6]   
-    val_areas: [1, 2, 3, 4, 6]   
-    inference_areas: [1, 2, 3, 4, 6]  
+    train_areas: [1, 2, 3, 4, 6]
+    val_areas: [1, 2, 3, 4, 6]
+    inference_areas: [1, 2, 3, 4, 6]

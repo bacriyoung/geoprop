@@ -16,7 +16,6 @@ from geoprop.models.point_jafar import DecoupledPointJAFAR
 
 def load_config(args):
     """
-    加载 Global Config 并合并 Dataset Specific Config
     """
     if not os.path.exists(args.global_config):
         raise FileNotFoundError(f"Global config not found at: {args.global_config}")

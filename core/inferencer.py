@@ -14,18 +14,17 @@ from geoprop.utils.visualizer import generate_viz
 
 def process_room_full_pipeline(cfg, model, data, return_all=False):
     """
-    S1 -> S4
     """
     N = len(data)
     xyz_full = data[:, :3]
     rgb_full = data[:, 3:6]
     lbl = data[:, 6].astype(int)
     
-    # seed
+    num_classes = cfg['dataset'].get('num_classes', 13)
+    
     seeds = get_fixed_seeds(N, cfg['dataset']['label_ratio'], lbl, cfg['project']['seed'])
     seed_mask = np.zeros(N, dtype=bool); seed_mask[seeds] = True
     
-    # Prepare Tensor
     rgb_norm = rgb_full/255.0 if rgb_full.max()>1.1 else rgb_full.copy()
     s_xyz = torch.from_numpy(data[seeds, :3]).float().cuda().unsqueeze(0)
     
@@ -34,8 +33,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     s_rgb = torch.from_numpy(rgb_seeds).float().cuda().unsqueeze(0)
     s_lbl = torch.from_numpy(data[seeds, 6].astype(int)).long().cuda().unsqueeze(0)
     
-    # S1
-    accum_probs = np.zeros((N, cfg['dataset']['num_classes']), dtype=np.float32)
+    accum_probs = np.zeros((N, num_classes), dtype=np.float32)
     accum_counts = np.zeros(N, dtype=np.float32)
     lbl_direct = np.full(N, -100, dtype=int)
     lbl_filtered_sparse = np.full(N, -100, dtype=int)
@@ -61,7 +59,8 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     loc = (s_xyz[:,idx,:] - b_xyz.mean(1, keepdim=True)).transpose(1,2)
                     cur = (b_xyz - b_xyz.mean(1, keepdim=True)).transpose(1,2)
                     norm = (loc - cur.min(2,keepdim=True)[0]) / (cur.max(2,keepdim=True)[0] - cur.min(2,keepdim=True)[0] + 1e-6)
-                    val = torch.zeros(1, cfg['dataset']['num_classes'], len(idx)).cuda().scatter_(1, s_lbl[:,idx].unsqueeze(1), 1.0)
+                    
+                    val = torch.zeros(1, num_classes, len(idx)).cuda().scatter_(1, s_lbl[:,idx].unsqueeze(1), 1.0)
                     
                     with torch.no_grad():
                         rec, bdy = model(cur, loc, torch.cat([s_rgb[:,idx].transpose(1,2), norm],1), s_rgb[:,idx].transpose(1,2))
@@ -85,11 +84,9 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     lbl_s2[valid_tta] = np.argmax(accum_probs[valid_tta]/accum_counts[valid_tta, None], axis=1)
     lbl_s2 = confidence_filter.knn_fill(xyz_full, lbl_s2)
 
-    # calculate confidence_map
     confidence_map = np.zeros(N, dtype=np.float32)
     confidence_map[valid_tta] = np.max(accum_probs[valid_tta] / accum_counts[valid_tta, None], axis=1)
 
-    # Confidence Injection
     result_stages = OrderedDict()
     result_stages["Direct Inference"] = lbl_direct
     lbl_current = lbl_direct
@@ -102,9 +99,11 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
         result_stages["TTA Integration"] = lbl_s2
         lbl_current = lbl_s2
 
-    # --- Geometric Gating ---
+    geom_cfg = cfg['inference']['geometric_gating']
+    geom_cfg['num_classes'] = num_classes
+    
     lbl_geom = geometric_gating.run(
-        cfg['inference']['geometric_gating'], 
+        geom_cfg, 
         xyz_full, 
         rgb_full, 
         lbl_current,
@@ -117,22 +116,23 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     else:
         shape_guide = lbl_current
 
-    # --- Graph Refine ---
+    graph_cfg = cfg['inference']['graph_refine']
+    graph_cfg['num_classes'] = num_classes
+    
     lbl_graph = graph_refine.run(
-        cfg['inference']['graph_refine'], 
+        graph_cfg, 
         xyz_full, 
         rgb_full, 
-        lbl_current, # Base Input 
-        shape_guide, # Shape Guide
+        lbl_current, 
+        shape_guide, 
         seed_mask, 
         lbl,
-        confidence=confidence_map 
+        confidence=confidence_map
     )
     if cfg['inference']['graph_refine']['enabled']:
         result_stages["Graph Refine"] = lbl_graph
         lbl_current = lbl_graph
 
-    # --- Spatial Smooth ---
     lbl_final = spatial_smooth.run(cfg['inference']['spatial_smooth'], xyz_full, lbl_current)
     if cfg['inference']['spatial_smooth']['enabled']:
         result_stages["Spatial Smooth"] = lbl_final
@@ -150,7 +150,6 @@ def validate_full_scene_logic(model, cfg, all_files):
     for f in all_files:
         data = np.load(f)
         res_dict = process_room_full_pipeline(cfg, model, data, return_all=True)
-        # validate Confidence Filter
         if "Confidence Filter" in res_dict:
             pred = res_dict["Confidence Filter"]
         else:

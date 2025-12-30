@@ -3,7 +3,7 @@
 
 # GeoProp: Geometric-Propagated Pseudo-Label Generation for S3DIS
 
-GeoProp is a multi-stage framework designed for high-fidelity pseudo-label generation in large-scale 3D indoor scenes (S3DIS). By integrating decoupled feature learning with geometric post-processing, it generates structured and noise-resistant labels suitable for downstream weakly-supervised learning.
+GeoProp is a multi-stage framework designed for high-fidelity pseudo-label generation in large-scale 3D scenes. By integrating decoupled feature learning with geometric post-processing, it generates structured and noise-resistant labels suitable for downstream weakly-supervised learning.
 
 ## Pipeline Overview
 
@@ -20,7 +20,7 @@ The framework processes 3D point clouds through a four-stage refinement pipeline
 geoprop/
 ├── config/             # YAML configurations (Global & Dataset-specific)
 ├── core/               # Training and Inference logic
-│   └── modules/        # S1-S4 post-processing modules
+│   └── modules/        # post-processing modules
 ├── data/               # Data loaders and seed generation
 ├── models/             # PointJAFAR model architecture
 ├── utils/              # Metrics, Visualization, and Logging
@@ -85,7 +85,7 @@ You can toggle specific post-processing stages in `config/global.yaml`:
 
 ## Experiment Logging
 
-Experiments are automatically organized by timestamp to prevent overwriting:
+Experiments are automatically organized by timestamp:
 `geoprop/outputs/s3dis/YYYYMMDD_HHMMSS/`
 
 * `logs/`: Detailed pipeline logs including per-class IoU analysis.
