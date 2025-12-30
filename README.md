@@ -10,19 +10,24 @@ GeoProp establishes a complete solution for label-efficient learning through the
 
 * **Geometric-Semantic Synergy**: Resolves the trade-off between semantic consistency and geometric fidelity by using semantic predictions as a base and geometric priors as constraints.
 * **Decoupled Feature Learning**: Integrates the `DecoupledPointJAFAR` module to explicitly separate semantic and geometric feature encoding, preventing feature entanglement under sparse supervision.
-* **Confidence-Aware Geometric Gating**: Introduces a differentiable structural consistency constraint. By dynamically computing a confidence map, this module adaptively rectifies boundary ambiguities while protecting high-confidence fine-grained structures (e.g., chair legs).
+* **Confidence-Aware Geometric Gating**: Introduces a differentiable structural consistency constraint. By dynamically computing a confidence map, this module adaptively rectifies boundary ambiguities while protecting high-confidence fine-grained structures.
 * **Robust Transductive Inference**: Reformulates pseudo-label generation as an energy minimization problem on sparse graphs, achieving state-of-the-art quality.
 
 ## Architecture
 
-The GeoProp framework operates in three streamlined phases:
+The GeoProp framework operates in a streamlined Coarse-to-Fine pipeline:
 
-1. **Training Phase**: The decoupled feature extractor (PointJAFAR) is trained using sparse seed annotations to learn robust semantic representations.
-2. **Inference Phase**: Initial semantic probability distributions are generated. This phase incorporates **Test-Time Augmentation (TTA)** and a **Confidence Filter** to produce a robust semantic initialization.
-3. **Post-processing Phase**: A cascade of geometric refinement modules:
-* **Geometric Gating**: The core innovation that applies supervoxel-based geometric voting with confidence protection.
+1. **Training Phase**: The decoupled feature extractor is trained using sparse seed annotations to learn robust semantic representations.
+2. **Inference Phase**:
+* **Direct Inference**: Initial prediction from the trained model.
+* **Test-Time Augmentation (TTA)**: Multi-view voting to stabilize probability distributions.
+* **Confidence Filter**: Eliminates high-frequency noise based on prediction confidence.
+
+
+3. **Refinement Phase**:
+* **Geometric Gating**: Applies supervoxel-based geometric voting with confidence protection to rectify structural errors.
 * **Graph Refinement**: Constructs a semantic-geometric affinity graph to optimize regional consistency via graph cuts.
-* **Spatial Smoothing**: Final spatial consistency verification.
+* **Spatial Smoothing**: Final spatial consistency verification using KNN.
 
 
 
@@ -33,11 +38,11 @@ geoprop/
 ├── config/             # Configuration system (Global & Dataset-specific)
 ├── core/               # Core computation engine
 │   ├── modules/        # Refinement modules (Geometric Gating, Graph Refine, etc.)
-│   ├── inferencer.py   # Full-scene inference pipeline
+│   ├── inferencer.py   # Full-scene inference pipeline with dual modes
 │   └── trainer.py      # Sparse supervision training logic
 ├── data/               # Data loading and processing
-├── models/             # PointJAFAR network architecture
-├── utils/              # Metrics and visualization tools
+├── models/             # Decoupled PointJAFAR architecture
+├── utils/              # Metrics, Logger, and Visualization tools
 ├── main.py             # Unified entry point
 └── outputs/            # Experiment outputs (archived by timestamp)
 
@@ -81,58 +86,75 @@ Update `root_dir` in `geoprop/config/s3dis/s3dis.yaml` to point to your data dir
 
 ## Usage
 
-GeoProp is designed for one-click execution, handling training, validation, inference, and optimization automatically.
+GeoProp supports two distinct operation modes controlled by the `ablation_mode` flag in `global.yaml`.
 
-### 1. Full Pipeline (Training + Generation)
+### 1. Production Mode (Default)
 
-This is the standard mode. The system performs sparse supervision training and then generates pseudo-labels for the full scene.
+Optimized for speed and deployment. It processes the full pipeline but only saves the final result.
 
+* **Behavior**: Only the final stage (Spatial Smooth) is saved.
+* **Logging**: detailed **Per-Class IoU** metrics are printed for every room to monitor specific category performance.
+* **Command**:
 ```bash
-# Run from the project root directory
 python main.py --global_config config/global.yaml
 
 ```
 
-### 2. Inference Only
 
-If you possess pre-trained weights and wish to test different post-processing parameters:
+
+### 2. Ablation Mode
+
+Designed for research and debugging. It allows saving intermediate results from specific modules.
+
+* **Behavior**: Intermediate pseudo-labels are saved into subdirectories (e.g., `pseudo_labels/Geometric_Gating/`) based on the `save_output` flag of each module.
+* **Logging**: Prints stage-wise mIoU comparisons to track performance gains across modules.
+* **Configuration**: Set `ablation_mode: true` in `global.yaml`.
+
+### Inference Only
+
+To skip training and run inference using a pre-trained model:
 
 1. Modify `config/global.yaml`:
 * Set `train: enable: false`
 * Set `inference: checkpoint_path: "./outputs/s3dis/YOUR_TIMESTAMP/best_model.pth"`
 
 
-2. Run:
-```bash
-python main.py
+2. Run `python main.py`
 
-```
+## Configuration
 
-
-
-### 3. Key Configuration Parameters (`config/global.yaml`)
-
-You can quickly verify ablation studies by adjusting the configuration:
+The behavior of GeoProp is fully controlled via `config/global.yaml`.
 
 ```yaml
 inference:
-  # Geometric Gating Module
+  # Mode Selection
+  ablation_mode: false   # false = Production Mode; true = Ablation Mode
+
+  # Module Configuration
   geometric_gating:
     enabled: true
     gate_strength: 5.0
-    confidence_threshold: 0.65  # Critical for protecting fine details
+    confidence_threshold: 0.65  # Protects fine details
+    save_output: true           # Only effective in Ablation Mode
 
-  # Graph Refinement Module
   graph_refine:
     enabled: true
-    fine_voxel_n: 80            # Controls the granularity of the graph cut
+    fine_voxel_n: 80
+    save_output: true
 
 ```
 
-## Performance
+## Output & Logging
 
-GeoProp demonstrates superior robustness on the S3DIS dataset, particularly in extremely label-scarce regimes. Experiment logs and generated pseudo-labels are automatically saved in:
-`outputs/s3dis/YYYYMMDD_HHMMSS/`
+All results are automatically organized by timestamp to prevent overwriting: `outputs/s3dis/YYYYMMDD_HHMMSS/`
+
+* **Logs**: `logs/pipeline_*.log` contains key configuration summaries and detailed evaluation metrics.
+* **Pseudo Labels**:
+* **Production Mode**: Saved directly in `pseudo_labels/`.
+* **Ablation Mode**: Organized in subfolders like `pseudo_labels/Geometric_Gating/`.
+
+
+* **Visualizations**: Saved in `viz/` (if enabled).
 
 ## Citation
 

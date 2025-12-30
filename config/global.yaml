@@ -1,22 +1,20 @@
 # ==============================================================================
-# Global Configuration (V17.3 Graph Refine Optimized)
+# Global Configuration (V20.1 - Fixed Direct Inference Control)
 # ==============================================================================
 
-# --- project ---
+# ... (Project, Train, Model settings remain unchanged) ...
 project:
   name: "geoprop_production"
   seed: 42
   device: "cuda"
   target_dataset: "s3dis"
 
-# --- global ---
 train:
   enable: true
   epochs: 50
   batch_size: 8
   learning_rate: 0.001
   weight_decay: 0.0001
-  
   val_interval: 1
   val_mode: "block_proxy" 
   val_sample_batches: 100
@@ -29,15 +27,14 @@ train:
   loss_weights:
     boundary: 0.5
 
-# --- model ---
 model:
   qk_dim: 128
   k_neighbors: 32
 
-# --- inference ---
+# --- Inference Settings ---
 inference:
   enable: true
-  checkpoint_path: "/home/work/research/Geoprop/outputs/geoprop/best_model.pth" 
+  checkpoint_path: "./outputs/s3dis/best_model.pth" 
   
   save_img: true
   save_npy: true
@@ -45,34 +42,49 @@ inference:
   vis_downsample: 60000
   vis_point_size: 20.0
 
-  # [S1]
+  # [Mode Selection]
+  # false (Default): Production Mode. Only final result saved.
+  # true: Ablation Mode. Intermediate results saved based on 'save_output' flags below.
+  ablation_mode: false
+
+  # [NEW] --- Module: Direct Inference (Base Model Output) ---
+  direct_inference:
+    save_output: true  
+
+  # --- Module: Test-Time Augmentation ---
   tta:
     enabled: false
     rounds: 5
     jitter: 0.005
+    save_output: true 
 
+  # --- Module: Confidence Filter ---
   confidence_filter:
     enabled: false
     rec_err_strict: 0.08
     rec_err_loose: 0.15
+    save_output: false
 
-  # [S2] Geometric Gating
+  # --- Module: Geometric Gating ---
   geometric_gating:
     enabled: true
     voxel_n: 400
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
     confidence_threshold: 0.65
+    save_output: true
 
-  # [S3] Graph Refine 
+  # --- Module: Graph Refine ---
   graph_refine:
     enabled: true
     fine_voxel_n: 80
     fine_weight_xyz: 10.0
     k_neighbors: 8
     confidence_threshold: 0.65
+    save_output: false
 
-  # [S4]
+  # --- Module: Spatial Smooth ---
   spatial_smooth:
     enabled: true
     k_neighbors: 32
+    save_output: true
