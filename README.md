@@ -1,24 +1,20 @@
 # GeoProp: Geometric-Semantic Synergy for Label-Efficient Point Cloud Segmentation
 
-**GeoProp** proposes a transductive framework for high-fidelity 3D point cloud segmentation under **extreme label scarcity (label ratio < 0.1%)**.
+**GeoProp** is a weakly supervised framework designed to bridge the gap between sparse annotation and dense semantic segmentation in large-scale 3D point clouds.
 
-By establishing a **synergistic coupling** between decoupled semantic representation learning and confidence-adaptive geometric priors, this framework effectively mitigates the inherent trade-off between semantic consistency and boundary precision in weakly supervised regimes.
+By establishing a synergistic coupling between decoupled semantic representation and geometric priors, GeoProp mitigates the inherent boundary ambiguity and high-frequency noise observed in label-scarce regimes (label ratio < 0.1%). The framework reformulates pseudo-label generation as a confidence-adaptive manifold regularization problem, achieving state-of-the-art transductive inference performance on the S3DIS dataset.
 
-## 1. Abstract
+## Core Methodology
 
-Semi-supervised learning on 3D point clouds often suffers from high-frequency noise and boundary ambiguities when supervision is sparse. We address this by reformulating the pseudo-label generation process as an energy minimization problem on a semantic-geometric affinity graph. **GeoProp** introduces a **Geometric Gating** mechanism that serves as a differentiable structural prior, adaptively rectifying semantic predictions while preserving fine-grained geometric details through a confidence-aware manifold regularization strategy.
+GeoProp operates on a **Coarse-to-Fine** paradigm, integrating three key theoretical contributions:
 
-## 2. Methodology
+* **Geometric-Semantic Synergy**: A novel mechanism that resolves the trade-off between semantic consistency and geometric fidelity, utilizing semantic predictions as a base and geometric priors as structural constraints.
+* **Decoupled Feature Learning**: An explicit separation of semantic and geometric feature encoding (via `DecoupledPointJAFAR`) to prevent feature entanglement under sparse supervision.
+* **Confidence-Adaptive Regularization**: A differentiable Geometric Gating module that dynamically rectifies structural errors based on local confidence maps, followed by a graph-cut optimization for regional consistency.
 
-The framework operates in a coarse-to-fine manner, integrating three core components:
+## Quick Start
 
-* **Decoupled Feature Learning**: A dual-stream architecture (`PointJAFAR`) that explicitly disentangles semantic feature encoding from geometric embedding, preventing feature collapse under sparse supervision.
-* **Geometric-Semantic Synergy**: A novel post-processing paradigm where semantic probabilities act as the base signal, constrained by supervoxel-based geometric voting and graph-cut optimization.
-* **Confidence-Aware Propagation**: A dynamic filtering mechanism that eliminates high-frequency noise while protecting high-confidence structural predictions (e.g., thin structures like chair legs) from over-smoothing.
-
-## 3. Quick Start
-
-### Installation
+### 1. Installation
 
 ```bash
 git clone https://github.com/yourusername/geoprop.git
@@ -27,46 +23,42 @@ pip install -r requirements.txt
 
 ```
 
-### Data Preparation (S3DIS)
+### 2. Data Preparation (S3DIS)
 
-Download the pre-processed S3DIS dataset and configure `root_dir` in `config/s3dis/s3dis.yaml`.
+Download the pre-processed data and configure the `root_dir` in `config/s3dis/s3dis.yaml`.
 
 ```bash
 gdown https://drive.google.com/uc?id=1MX3ZCnwqyRztG1vFRiHkKTz68ZJeHS4Y
 
 ```
 
-### Inference & Evaluation
+### 3. Usage
 
-GeoProp supports two operation modes via `config/global.yaml`:
+GeoProp provides a unified entry point for both training and inference, controlled by `config/global.yaml`.
 
-**1. Production Mode (Default)**
+**Production Mode (Default)**
+Trains the model on sparse seeds and generates high-fidelity pseudo-labels for the entire dataset.
 
-* Optimized for deployment efficiency.
-* Outputs final pseudo-labels and logs detailed per-class IoU.
 ```bash
 python main.py
 
 ```
 
+**Ablation Mode**
+To analyze the contribution of specific modules (e.g., Geometric Gating), enable `ablation_mode: true` in the configuration. This will serialize intermediate results for detailed inspection.
 
+## Configuration
 
-**2. Ablation Mode**
+All hyper-parameters and module switches are centralized in `config/global.yaml`.
 
-* Designed for mechanism analysis.
-* Saves intermediate results from specific modules (Geometric Gating, Graph Refine, etc.) to analyze the progressive refinement quality.
-```bash
-# Set 'ablation_mode: true' in config/global.yaml
-python main.py
+* **`label_ratio`**: Controls the sparsity of supervision (Default: `0.001`).
+* **`geometric_gating`**: Controls the strength of geometric structural constraints.
+* **`ablation_mode`**: Toggles between efficient production deployment and detailed experimental logging.
 
-```
+## Citation
 
-
-
-## 4. Citation
-
-If you use GeoProp in your research, please cite our work.
+If you find GeoProp useful for your research, please cite our work.
 
 ---
 
-*Disclaimer: This project is a research prototype designed for label-efficient 3D scene understanding.*
+*This project is released under the MIT License.*
