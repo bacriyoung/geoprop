@@ -1,0 +1,33 @@
+# --- Python 缓存 ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# --- 实验结果与生成目录 (重点) ---
+outputs/
+results/
+logs/
+runs/
+wandb/
+checkpoints/
+
+# --- 3D/遥感 大数据文件 ---
+*.pth
+*.ckpt
+*.onnx
+*.pcd
+*.las
+*.laz
+*.ply
+*.tif
+*.tiff
+*.npy
+*.npz
+
+# --- 虚拟环境与本地设置 ---
+.venv/
+env/
+.vscode/
+.idea/
+.DS_Store
