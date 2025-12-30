@@ -158,17 +158,7 @@ All results are automatically organized by timestamp to prevent overwriting: `ou
 
 ## Citation
 
-If you use GeoProp in your research, please cite our work:
-
-```bibtex
-@article{geoprop2025,
-  title={GeoProp: Geometric-Semantic Synergy for Label-Efficient Point Cloud Segmentation},
-  author={Your Name and Collaborators},
-  journal={arXiv preprint arXiv:25xx.xxxxx},
-  year={2025}
-}
-
-```
+If you use GeoProp in your research, please cite our work.
 
 ## Contact
 
