@@ -9,7 +9,7 @@ By establishing a synergistic coupling between decoupled semantic representation
 GeoProp operates on a **Coarse-to-Fine** paradigm, integrating three key theoretical contributions:
 
 * **Geometric-Semantic Synergy**: A novel mechanism that resolves the trade-off between semantic consistency and geometric fidelity, utilizing semantic predictions as a base and geometric priors as structural constraints.
-* **Decoupled Feature Learning**: An explicit separation of semantic and geometric feature encoding (via `DecoupledPointJAFAR`) to prevent feature entanglement under sparse supervision.
+* **Decoupled Feature Learning**: An explicit separation of semantic and geometric feature encoding to prevent feature entanglement under sparse supervision.
 * **Confidence-Adaptive Regularization**: A differentiable Geometric Gating module that dynamically rectifies structural errors based on local confidence maps, followed by a graph-cut optimization for regional consistency.
 
 ## Quick Start
