@@ -1,7 +1,7 @@
 
 ---
 
-# GeoProp: Geometric-Propagated Pseudo-Label Generation for S3DIS
+# GeoProp: Geometric-Propagated Pseudo-Label Generation
 
 GeoProp is a multi-stage framework designed for high-fidelity pseudo-label generation in large-scale 3D scenes. By integrating decoupled feature learning with geometric post-processing, it generates structured and noise-resistant labels suitable for downstream weakly-supervised learning.
 

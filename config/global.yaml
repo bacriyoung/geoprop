@@ -22,7 +22,7 @@ train:
   val_sample_batches: 100
 
   augmentation:
-    enabled: false
+    enabled: true
     jitter_sigma: 0.001
     jitter_clip: 0.005
 
