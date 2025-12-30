@@ -1,0 +1,78 @@
+# ==============================================================================
+# Global Configuration
+# ==============================================================================
+
+# --- 项目设置 ---
+project:
+  name: "geoprop_production"
+  seed: 42
+  device: "cuda"
+  
+  # [核心] 指定当前使用的数据集名称 (对应 config/NAME/NAME.yaml)
+  target_dataset: "s3dis"
+
+# --- 训练通用设置 ---
+train:
+  enable: true
+  epochs: 50
+  batch_size: 8
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  
+  # 验证策略
+  val_interval: 1
+  val_mode: "block_proxy" 
+  val_sample_batches: 100
+
+  augmentation:
+    enabled: true
+    jitter_sigma: 0.001
+    jitter_clip: 0.005
+
+  loss_weights:
+    boundary: 0.5
+
+# --- 模型通用设置 ---
+model:
+  qk_dim: 128
+  k_neighbors: 32
+
+# --- 推理通用设置 ---
+inference:
+  enable: true
+  # 模型权重 (若训练开启，会自动覆盖为最新训练出的权重)
+  checkpoint_path: "./outputs/s3dis/best_model.pth" 
+  
+  # [新功能] 输出开关
+  save_img: true       # 是否生成可视化图片
+  save_npy: true       # 是否保存伪标签数据 (.npy)
+  
+  vis_downsample: 60000
+  vis_point_size: 20.0
+
+  # 模块开关
+  tta:
+    enabled: true
+    rounds: 5
+    jitter: 0.005
+
+  confidence_filter:
+    enabled: true
+    rec_err_strict: 0.08
+    rec_err_loose: 0.15
+
+  voxel_gating:
+    enabled: true
+    voxel_n: 400
+    weights: {rgb: 15.0, xyz: 1.0}
+    gate_strength: 5.0
+
+  graph_refine:
+    enabled: true
+    fine_voxel_n: 80
+    fine_weight_xyz: 10.0
+    k_neighbors: 8
+
+  spatial_smooth:
+    enabled: true
+    k_neighbors: 32

@@ -1,0 +1,12 @@
+[13:04:19] Loaded Config: /home/work/research/geoprop/config/global.yaml
+[13:04:19] Output Root: /home/work/research/geoprop/outputs/s3dis
+[13:04:19] >>> [Phase 1] Training Started...
+[13:04:19] [TRAIN] S3DIS Dataset: Loaded 204 rooms from Areas [1, 2, 3, 4, 6]
+[13:04:19] [VAL] S3DIS Dataset: Loaded 204 rooms from Areas [1, 2, 3, 4, 6]
+[13:05:00] Epoch 01 | Loss: 0.2767 | Val (block_proxy) mIoU: 62.32%
+[13:05:00]   --> Best Model Saved to /home/work/research/geoprop/outputs/s3dis/best_model.pth
+[13:05:40] Epoch 02 | Loss: 0.2555 | Val (block_proxy) mIoU: 62.79%
+[13:05:40]   --> Best Model Saved to /home/work/research/geoprop/outputs/s3dis/best_model.pth
+[13:06:21] Epoch 03 | Loss: 0.2542 | Val (block_proxy) mIoU: 64.73%
+[13:06:21]   --> Best Model Saved to /home/work/research/geoprop/outputs/s3dis/best_model.pth
+[13:07:02] Epoch 04 | Loss: 0.2515 | Val (block_proxy) mIoU: 64.42%
