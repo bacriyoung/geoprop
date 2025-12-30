@@ -11,10 +11,7 @@ dataset:
   block_size: 2.0
   label_ratio: 0.001
 
-  # [核心] 区域划分配置
-  # Area 5 通常作为测试集，不参与伪标签生成的训练和生成
-  # 我们的目标是为训练集生成标签，所以只关注 1,2,3,4,6
   split:
-    train_areas: [1, 2, 3, 4, 6]      # 训练用的区域 (用于学习几何规律)
-    val_areas: [1, 2, 3, 4, 6]        # 验证用的区域 (Block Proxy 验证)
-    inference_areas: [1, 2, 3, 4, 6]  # 生成伪标签的目标区域
+    train_areas: [1, 2, 3, 4, 6]   
+    val_areas: [1, 2, 3, 4, 6]   
+    inference_areas: [1, 2, 3, 4, 6]  

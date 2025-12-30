@@ -2,7 +2,7 @@ import scipy.stats as stats
 from sklearn.neighbors import KDTree
 
 def run(cfg, xyz, labels):
-    """ S4: Spatial Smoothing """
+    """ Spatial Smoothing """
     if not cfg['enabled']:
         return labels
         

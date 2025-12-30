@@ -8,14 +8,9 @@ import logging
 import glob
 import numpy as np
 
-# 数据集与模型
 from geoprop.data.s3dis.s3dis_dataset import S3DISDataset 
 from geoprop.models.point_jafar import DecoupledPointJAFAR
 from geoprop.utils.metrics import IoUCalculator
-
-# [核心修复] 避免循环引用！
-# 不要写: from geoprop.core import ...
-# 要写具体的子模块路径:
 from geoprop.core.inferencer import validate_full_scene_logic 
 
 def compute_gradient_boundary(xyz, rgb, k=16):
@@ -79,11 +74,9 @@ def run_training(cfg, save_path):
     best_miou = 0.0
     val_mode = cfg['train'].get('val_mode', 'block_proxy')
 
-    # 预加载全量文件列表 (仅当需要全图验证时)
+    # if full_scene val
     all_files = []
     if val_mode == 'full_scene':
-        # 这里需要 Dataset 里的文件列表逻辑，或者重新 glob
-        # 简单起见，我们重新初始化一个 inference split 的 dataset 拿文件
         inf_ds = S3DISDataset(cfg, split='inference')
         all_files = inf_ds.files
 

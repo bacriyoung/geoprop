@@ -14,18 +14,18 @@ from geoprop.utils.visualizer import generate_viz
 
 def process_room_full_pipeline(cfg, model, data, return_all=False):
     """
-    完整的 S1 -> S4 推理流水线 (Fully Optimized with Confidence Awareness)
+    S1 -> S4
     """
     N = len(data)
     xyz_full = data[:, :3]
     rgb_full = data[:, 3:6]
     lbl = data[:, 6].astype(int)
     
-    # 1. 获取固定种子
+    # seed
     seeds = get_fixed_seeds(N, cfg['dataset']['label_ratio'], lbl, cfg['project']['seed'])
     seed_mask = np.zeros(N, dtype=bool); seed_mask[seeds] = True
     
-    # 准备 Tensor 数据
+    # Prepare Tensor
     rgb_norm = rgb_full/255.0 if rgb_full.max()>1.1 else rgb_full.copy()
     s_xyz = torch.from_numpy(data[seeds, :3]).float().cuda().unsqueeze(0)
     
@@ -34,7 +34,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     s_rgb = torch.from_numpy(rgb_seeds).float().cuda().unsqueeze(0)
     s_lbl = torch.from_numpy(data[seeds, 6].astype(int)).long().cuda().unsqueeze(0)
     
-    # 2. 基础推理循环 (S1 & S2)
+    # S1
     accum_probs = np.zeros((N, cfg['dataset']['num_classes']), dtype=np.float32)
     accum_counts = np.zeros(N, dtype=np.float32)
     lbl_direct = np.full(N, -100, dtype=int)
@@ -85,11 +85,11 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     lbl_s2[valid_tta] = np.argmax(accum_probs[valid_tta]/accum_counts[valid_tta, None], axis=1)
     lbl_s2 = confidence_filter.knn_fill(xyz_full, lbl_s2)
 
-    # 计算全局置信度图
+    # calculate confidence_map
     confidence_map = np.zeros(N, dtype=np.float32)
     confidence_map[valid_tta] = np.max(accum_probs[valid_tta] / accum_counts[valid_tta, None], axis=1)
 
-    # 3. 构建结果字典 (Confidence Injection)
+    # Confidence Injection
     result_stages = OrderedDict()
     result_stages["Direct Inference"] = lbl_direct
     lbl_current = lbl_direct
@@ -102,7 +102,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
         result_stages["TTA Integration"] = lbl_s2
         lbl_current = lbl_s2
 
-    # --- Geometric Gating (S2.1) ---
+    # --- Geometric Gating ---
     lbl_geom = geometric_gating.run(
         cfg['inference']['geometric_gating'], 
         xyz_full, 
@@ -113,27 +113,26 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     if cfg['inference']['geometric_gating']['enabled']:
         result_stages["Geometric Gating"] = lbl_geom
         shape_guide = lbl_geom
-        lbl_current = lbl_geom # S2.1 的结果作为 S3 的 Base
+        lbl_current = lbl_geom 
     else:
         shape_guide = lbl_current
 
-    # --- Graph Refine (S3) [优化点] ---
-    # 传入 confidence_map 实现保护机制
+    # --- Graph Refine ---
     lbl_graph = graph_refine.run(
         cfg['inference']['graph_refine'], 
         xyz_full, 
         rgb_full, 
-        lbl_current, # Base Input (S2.1 or S2)
+        lbl_current, # Base Input 
         shape_guide, # Shape Guide
         seed_mask, 
         lbl,
-        confidence=confidence_map # <--- 关键修改
+        confidence=confidence_map 
     )
     if cfg['inference']['graph_refine']['enabled']:
         result_stages["Graph Refine"] = lbl_graph
         lbl_current = lbl_graph
 
-    # --- Spatial Smooth (S4) ---
+    # --- Spatial Smooth ---
     lbl_final = spatial_smooth.run(cfg['inference']['spatial_smooth'], xyz_full, lbl_current)
     if cfg['inference']['spatial_smooth']['enabled']:
         result_stages["Spatial Smooth"] = lbl_final
@@ -151,7 +150,7 @@ def validate_full_scene_logic(model, cfg, all_files):
     for f in all_files:
         data = np.load(f)
         res_dict = process_room_full_pipeline(cfg, model, data, return_all=True)
-        # 验证指标：优先使用 Confidence Filter
+        # validate Confidence Filter
         if "Confidence Filter" in res_dict:
             pred = res_dict["Confidence Filter"]
         else:

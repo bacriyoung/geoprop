@@ -5,16 +5,16 @@
 
 GeoProp is a multi-stage framework designed for high-fidelity pseudo-label generation in large-scale 3D indoor scenes (S3DIS). By integrating decoupled feature learning with geometric post-processing, it generates structured and noise-resistant labels suitable for downstream weakly-supervised learning.
 
-## 🚀 Pipeline Overview
+## Pipeline Overview
 
 The framework processes 3D point clouds through a four-stage refinement pipeline:
 
-1. **Stage 1 & 2: Semantic Initialization**: Uses `PointJAFAR` for decoupled feature learning, followed by **Test-Time Augmentation (TTA)** to consolidate semantic consistency.
-2. **Stage 2.1: Geometric Gating**: Implements voxel-based geometric voting with a **Confidence-Aware Protection** mechanism to preserve high-frequency details (e.g., chair legs) while smoothing planar regions.
+1. **Stage 1: Semantic Initialization**: Uses `PointJAFAR` for decoupled feature learning, followed by **Test-Time Augmentation (TTA)** to consolidate semantic consistency.
+2. **Stage 2: Geometric Gating**: Implements voxel-based geometric voting with a **Confidence-Aware Protection** mechanism to preserve high-frequency details (e.g., chair legs) while smoothing planar regions.
 3. **Stage 3: Graph Refine**: A graph-cut based optimization that aligns semantic boundaries with geometric edges, protected by semantic confidence maps to prevent over-smoothing.
 4. **Stage 4: Spatial Smoothing**: Final spatial consistency check using K-Nearest Neighbors (KNN).
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 geoprop/
@@ -29,7 +29,7 @@ geoprop/
 
 ```
 
-## 🛠️ Installation
+## Installation
 
 1. **Clone the repository**:
 ```bash
@@ -49,7 +49,7 @@ pip install torch torchvision torchaudio
 
 
 
-## 📊 Data Preparation
+## Data Preparation
 
 1. **Download S3DIS Dataset**:
 Download the raw `.npy` files for S3DIS (Areas 1-6):
@@ -62,7 +62,7 @@ gdown https://drive.google.com/uc?id=1MX3ZCnwqyRztG1vFRiHkKTz68ZJeHS4Y
 2. **Configuration**:
 Update the `root_dir` in `geoprop/config/s3dis/s3dis.yaml` to point to your data location.
 
-## 🏃 Usage
+## Usage
 
 GeoProp is designed to run from the package root directory.
 
@@ -83,7 +83,7 @@ You can toggle specific post-processing stages in `config/global.yaml`:
 * `inference.save_img`: Toggles visualization output.
 * `inference.tta.rounds`: Sets the number of TTA iterations.
 
-## 📈 Experiment Logging
+## Experiment Logging
 
 Experiments are automatically organized by timestamp to prevent overwriting:
 `geoprop/outputs/s3dis/YYYYMMDD_HHMMSS/`
@@ -92,7 +92,7 @@ Experiments are automatically organized by timestamp to prevent overwriting:
 * `viz/`: Visualization of each refinement stage.
 * `pseudo_labels/`: The final generated `.npy` files with refined labels.
 
-## 📝 Citation
+## Citation
 
 If you find this work helpful in your research, please consider citing our project.
 
