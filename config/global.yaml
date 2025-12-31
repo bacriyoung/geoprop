@@ -1,30 +1,33 @@
 # ==============================================================================
-# Global Configuration (V31.1 - Performance Unlocked)
+# Global Configuration (V3.0 - Overfitting & Dynamic Weights)
 # ==============================================================================
 
-# --- project ---
 project:
-  name: "geoprop_v31_full_perf"
+  name: "geoprop_v30_overfit"
   seed: 42
   device: "cuda"
   target_dataset: "s3dis"
 
-# --- global ---
 train:
   enable: true
   epochs: 50
   batch_size: 8
-  
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  use_dynamic_weights: false
+  # [V3.0 Strategy]
+  # 1. Enable class-balanced weighting for MSE loss
+  use_dynamic_weights: true
+  # 2. Use fixed seeds during training to allow memorization
+  fix_train_seeds: true
   
   val_interval: 1
   val_mode: "block_proxy" 
   val_sample_batches: 100
 
   augmentation:
+    # [Tip] For pure overfitting, you might even want to disable jitter!
+    # But keeping it slight helps robustness around the fixed seeds.
     enabled: true
     jitter_sigma: 0.001
     jitter_clip: 0.005
@@ -32,35 +35,29 @@ train:
   loss_weights:
     boundary: 0.3
 
-# --- dataset ---
 dataset:
   name: "s3dis"
-  # [REVERTED] Training was fine, so we remove the limit to maximize performance.
-  # Let the dataset loader handle full scenes or default sampling.
   num_workers: 4
 
-# --- model ---
 model:
   qk_dim: 128
   k_neighbors: 32
-  input_geo_dim: 18
+  # [V3.0 Input] Absolute XYZ(3) + Absolute RGB(3) = 6 dim
+  # This encourages the network to memorize positions.
+  input_geo_dim: 6
 
-# --- inference ---
 inference:
   enable: true
-  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20251231_214559/best_model.pth" 
-  
+  checkpoint_path: "./outputs/s3dis/best_model.pth" 
   save_img: true
   save_npy: true
-  
   vis_downsample: 60000
   vis_point_size: 20.0
-
   ablation_mode: true
-  
+
   direct_inference:
     save_output: true
-  # [S1] TTA
+
   tta:
     enabled: true
     rounds: 5
@@ -73,25 +70,22 @@ inference:
     rec_err_loose: 0.15
     save_output: false
 
-  # [S2] Geometric Gating
   geometric_gating:
     enabled: true
     voxel_n: 400
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
     confidence_threshold: 0.65
-    save_output: false
+    save_output: true
 
-  # [S3] Graph Refine 
   graph_refine:
     enabled: true
     fine_voxel_n: 80
     fine_weight_xyz: 10.0
     k_neighbors: 8
     confidence_threshold: 0.65
-    save_output: false
+    save_output: true
 
-  # [S4] Spatial Smooth
   spatial_smooth:
     enabled: true
     k_neighbors: 32
