@@ -1,20 +1,25 @@
 # ==============================================================================
-# Global Configuration (V20.1 - Fixed Direct Inference Control)
+# Global Configuration (V31.1 - Performance Unlocked)
 # ==============================================================================
 
-# ... (Project, Train, Model settings remain unchanged) ...
+# --- project ---
 project:
-  name: "geoprop_production"
+  name: "geoprop_v31_full_perf"
   seed: 42
   device: "cuda"
   target_dataset: "s3dis"
 
+# --- global ---
 train:
   enable: true
   epochs: 50
   batch_size: 8
+  
   learning_rate: 0.001
   weight_decay: 0.0001
+  
+  use_dynamic_weights: false
+  
   val_interval: 1
   val_mode: "block_proxy" 
   val_sample_batches: 100
@@ -25,65 +30,66 @@ train:
     jitter_clip: 0.005
 
   loss_weights:
-    boundary: 0.5
+    boundary: 0.3
 
+# --- dataset ---
+dataset:
+  name: "s3dis"
+  # [REVERTED] Training was fine, so we remove the limit to maximize performance.
+  # Let the dataset loader handle full scenes or default sampling.
+  num_workers: 4
+
+# --- model ---
 model:
   qk_dim: 128
   k_neighbors: 32
+  input_geo_dim: 18
 
-# --- Inference Settings ---
+# --- inference ---
 inference:
   enable: true
-  checkpoint_path: "./outputs/s3dis/best_model.pth" 
+  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20251231_210526/best_model.pth" 
   
   save_img: true
-  save_npy: true
+  save_npy: false
   
   vis_downsample: 60000
   vis_point_size: 20.0
 
-  # [Mode Selection]
-  # false (Default): Production Mode. Only final result saved.
-  # true: Ablation Mode. Intermediate results saved based on 'save_output' flags below.
   ablation_mode: true
 
-  # [NEW] --- Module: Direct Inference (Base Model Output) ---
-  direct_inference:
-    save_output: true  
-
-  # --- Module: Test-Time Augmentation ---
+  # [S1] TTA
   tta:
-    enabled: true
+    enabled: false
     rounds: 5
-    jitter: 0.005
-    save_output: true 
+    jitter: 0.005 
+    save_output: true
 
-  # --- Module: Confidence Filter ---
   confidence_filter:
     enabled: false
     rec_err_strict: 0.08
     rec_err_loose: 0.15
     save_output: false
 
-  # --- Module: Geometric Gating ---
+  # [S2] Geometric Gating
   geometric_gating:
     enabled: true
     voxel_n: 400
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
     confidence_threshold: 0.65
-    save_output: false
+    save_output: true
 
-  # --- Module: Graph Refine ---
+  # [S3] Graph Refine 
   graph_refine:
     enabled: true
     fine_voxel_n: 80
     fine_weight_xyz: 10.0
     k_neighbors: 8
     confidence_threshold: 0.65
-    save_output: false
+    save_output: true
 
-  # --- Module: Spatial Smooth ---
+  # [S4] Spatial Smooth
   spatial_smooth:
     enabled: true
     k_neighbors: 32

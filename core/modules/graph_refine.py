@@ -26,7 +26,11 @@ def fast_mode_voting(sv_ids, labels, n_classes):
     
     return votes
 
-def run(cfg, xyz, rgb, pred_lbl, shape_guide, seed_mask, gt_lbl, confidence=None):
+def run(cfg, xyz, rgb, pred_lbl, shape_guide, seed_mask, gt_lbl=None, confidence=None):
+    """
+    Graph Refinement Module.
+    [FIX] Made gt_lbl optional to prevent crashing if not provided.
+    """
     if not cfg['enabled']:
         return pred_lbl
 
@@ -35,19 +39,23 @@ def run(cfg, xyz, rgb, pred_lbl, shape_guide, seed_mask, gt_lbl, confidence=None
     if rgb.max() > 1.1: rgb = rgb / 255.0
     N = len(xyz)
     
+    # Supervoxel Clustering
     feats_f = np.concatenate([xyz * cfg['fine_weight_xyz'], rgb * 20.0], axis=1)
     n_clus_f = max(50, N // cfg['fine_voxel_n'])
     km_f = MiniBatchKMeans(n_clusters=n_clus_f, batch_size=8192, 
                            n_init=1, max_iter=20, random_state=42)
     sv_f = km_f.fit_predict(feats_f)
     
+    # Smooth SV assignments
     tree_pts = KDTree(xyz)
     _, idx_pts = tree_pts.query(xyz, k=4)
     neighbor_sv = sv_f[idx_pts]
     sv_f = stats.mode(neighbor_sv, axis=1, keepdims=True)[0].flatten()
     
+    # Initial Vote
     sv_labels_arr = fast_mode_voting(sv_f, shape_guide, n_classes=num_classes)
     
+    # Graph Construction
     n_sv = sv_f.max() + 1
     count = np.bincount(sv_f, minlength=n_sv)
     count[count==0] = 1
@@ -60,6 +68,7 @@ def run(cfg, xyz, rgb, pred_lbl, shape_guide, seed_mask, gt_lbl, confidence=None
     present_ids = np.where(present_mask)[0]
     active_centroids = centroids[present_ids]
     
+    # Graph Smoothing
     if len(active_centroids) > cfg['k_neighbors']:
         knn_graph = NearestNeighbors(n_neighbors=cfg['k_neighbors'], n_jobs=-1).fit(active_centroids)
         _, neighbor_indices = knn_graph.kneighbors(active_centroids)
@@ -77,10 +86,14 @@ def run(cfg, xyz, rgb, pred_lbl, shape_guide, seed_mask, gt_lbl, confidence=None
         
     final_lbl = final_lookup[sv_f]
     
+    # Restore -100 (Unlabeled)
     final_lbl[pred_lbl == -100] = -100
-    if seed_mask is not None:
+    
+    # [FIX] Enforce seeds only if gt_lbl is provided
+    if seed_mask is not None and gt_lbl is not None:
         final_lbl[seed_mask] = gt_lbl[seed_mask]
 
+    # Confidence Protection
     if confidence is not None:
         thresh = cfg.get('confidence_threshold', 0.65)
         protect_mask = confidence > thresh
