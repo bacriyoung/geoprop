@@ -22,24 +22,24 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     # Normalize RGB
     rgb_norm = rgb_full/255.0 if rgb_full.max()>1.1 else rgb_full.copy()
     
-    # [MEMORY FIX] Just prepare raw tensors. DO NOT compute global blobs here.
+    # Prepare Raw Tensors (No Global Feature Computation to avoid OOM/Mismatch)
     full_xyz_tensor = torch.from_numpy(xyz_full).float().cuda().unsqueeze(0).transpose(1, 2)
     full_rgb_tensor = torch.from_numpy(rgb_norm).float().cuda().unsqueeze(0).transpose(1, 2)
 
-    # 1. Handle Seeds
+    # 1. Setup Global Seeds
     seeds = get_fixed_seeds(N, cfg['dataset']['label_ratio'], lbl, cfg['project']['seed'])
     seed_lbls = lbl[seeds]
     valid_seed_mask = (seed_lbls >= 0) & (seed_lbls < num_classes)
-    seeds = seeds[valid_seed_mask]
     
-    # Sparse Seeds Data
-    s_xyz = full_xyz_tensor[:, :, seeds]
-    s_rgb = full_rgb_tensor[:, :, seeds]
-    s_lbl = torch.from_numpy(lbl[seeds]).long().cuda().unsqueeze(0)
+    # Global Seed Indices (Valid ones)
+    global_seed_indices = seeds[valid_seed_mask]
     
-    with torch.no_grad():
-        # Compute sparse blobs for seeds only
-        s_geo_blobs, s_rgb_blobs = compute_dual_gblobs(s_xyz, s_rgb, k=min(32, len(seeds)))
+    # Create a fast lookup map: Global Index -> Seed Label
+    # We use a full array for O(1) access inside blocks
+    global_seed_map = np.full(N, -1, dtype=int)
+    global_seed_map[global_seed_indices] = lbl[global_seed_indices]
+    
+    # Convert to tensor for block operations if needed, but numpy lookup is fast enough for slicing
     
     accum_probs = np.zeros((N, num_classes), dtype=np.float32)
     accum_counts = np.zeros(N, dtype=np.float32)
@@ -56,46 +56,73 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
         # Sliding Window
         for x in np.arange(min_c[0], max_c[0], 1.5):
             for y in np.arange(min_c[1], max_c[1], 1.5):
-                mask = np.where((aug_xyz[:,0]>=x) & (aug_xyz[:,0]<x+2.0) & 
-                                (aug_xyz[:,1]>=y) & (aug_xyz[:,1]<y+2.0))[0]
+                # Get Block Indices
+                mask_indices = np.where((aug_xyz[:,0]>=x) & (aug_xyz[:,0]<x+2.0) & 
+                                        (aug_xyz[:,1]>=y) & (aug_xyz[:,1]<y+2.0))[0]
                 
-                if len(mask) > 50:
+                if len(mask_indices) > 50:
                     # 2. Block Data
-                    b_xyz = torch.from_numpy(aug_xyz[mask]).float().cuda().unsqueeze(0).transpose(1, 2)
-                    b_rgb = full_rgb_tensor[:, :, mask]
+                    b_xyz = torch.from_numpy(aug_xyz[mask_indices]).float().cuda().unsqueeze(0).transpose(1, 2)
+                    b_rgb = full_rgb_tensor[:, :, mask_indices]
+                    
+                    # Identify Seeds INSIDE this block
+                    # The seeds must be part of the current block to have valid local geometry
+                    block_seed_mask = global_seed_map[mask_indices] != -1
+                    
+                    # If block has too few seeds, we might want to skip or use Nearest Neighbor from outside?
+                    # For strict correctness, we stick to training logic: Local Context -> Local Seeds
+                    # But we ensure at least 1 seed exists, or we skip/pad.
+                    if block_seed_mask.sum() == 0:
+                        continue 
+                        
+                    # Indices relative to the block (0 to BlockSize-1)
+                    rel_seed_idx = np.where(block_seed_mask)[0]
+                    
+                    # Limit max seeds to avoid OOM in attention (e.g. 256)
+                    if len(rel_seed_idx) > 256:
+                        # Deterministic subsample
+                        rng = np.random.RandomState(42 + len(mask_indices))
+                        rel_seed_idx = rng.choice(rel_seed_idx, 256, replace=False)
+                    
+                    # Get Labels for these seeds
+                    # mask_indices[rel_seed_idx] gives global indices of these seeds
+                    current_seed_lbls = global_seed_map[mask_indices[rel_seed_idx]]
                     
                     with torch.no_grad():
-                        # [CRITICAL] Compute Blobs LOCALLY
+                        # [CRITICAL FIX] Compute Dense Blobs for the Block
+                        # This creates correct geometry features for ALL points in block
                         b_geo_blobs, b_rgb_blobs = compute_dual_gblobs(b_xyz, b_rgb, k=32)
                         
-                        # 3. Dynamic Seed Matching
-                        dist = torch.cdist(b_xyz.mean(2, keepdim=True).transpose(1, 2), s_xyz.transpose(1, 2))
-                        _, s_idx = torch.topk(dist, min(256, len(seeds)), dim=-1, largest=False)
-                        s_idx = s_idx.view(-1)
+                        # [CRITICAL FIX] Slice Seed Features from Dense Blobs
+                        # Now seed features have DENSE context (walls look like walls, not isolated points)
+                        ls_geo_blobs = b_geo_blobs[:, :, rel_seed_idx]
+                        ls_rgb_blobs = b_rgb_blobs[:, :, rel_seed_idx]
                         
-                        # Gather seeds
-                        ls_xyz = s_xyz[:, :, s_idx]
-                        ls_geo_blobs = s_geo_blobs[:, :, s_idx]
-                        ls_rgb_blobs = s_rgb_blobs[:, :, s_idx]
+                        # Prepare Seed XYZ (Relative)
+                        # b_xyz is [1, 3, N_block]
+                        # rel_seed_idx converts to [1, 3, N_seeds]
+                        ls_xyz = b_xyz[:, :, rel_seed_idx]
                         
-                        ls_val_sem = torch.zeros(1, num_classes, len(s_idx)).cuda()
-                        ls_val_sem.scatter_(1, s_lbl[:, s_idx].unsqueeze(1), 1.0)
+                        # Prepare Labels
+                        ls_val_sem = torch.zeros(1, num_classes, len(rel_seed_idx)).cuda()
+                        ls_val_sem.scatter_(1, torch.from_numpy(current_seed_lbls).long().cuda().unsqueeze(0).unsqueeze(1), 1.0)
                         
-                        # 4. Relative Pos
-                        loc = ls_xyz - b_xyz.mean(2, keepdim=True)
-                        cur = b_xyz - b_xyz.mean(2, keepdim=True)
+                        # Relative Positions (Centering)
+                        block_center = b_xyz.mean(2, keepdim=True)
+                        loc = ls_xyz - block_center
+                        cur = b_xyz - block_center
                         
-                        # 5. Forward
+                        # Forward
                         probs, _ = model(cur, loc, ls_val_sem, b_geo_blobs, ls_geo_blobs, b_rgb_blobs, ls_rgb_blobs)
                     
                     prob_np = probs.squeeze(0).transpose(0, 1).cpu().numpy()
-                    accum_probs[mask] += prob_np
-                    accum_counts[mask] += 1
+                    accum_probs[mask_indices] += prob_np
+                    accum_counts[mask_indices] += 1
                     
                     if t == 0:
                         pred_block = np.argmax(prob_np, axis=1)
-                        lbl_direct[mask] = pred_block
-                        lbl_filtered_sparse[mask] = pred_block
+                        lbl_direct[mask_indices] = pred_block
+                        lbl_filtered_sparse[mask_indices] = pred_block
 
     # --- Post-processing ---
     
@@ -133,8 +160,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     graph_cfg = cfg['inference']['graph_refine']
     graph_cfg['num_classes'] = num_classes
     if graph_cfg['enabled']:
-        seed_mask_bool = np.zeros(N, dtype=bool); seed_mask_bool[seeds] = True
-        # [FIX] Added gt_lbl=lbl argument correctly
+        seed_mask_bool = np.zeros(N, dtype=bool); seed_mask_bool[global_seed_indices] = True
         lbl_graph = graph_refine.run(graph_cfg, xyz_full, rgb_full, current_lbl, current_lbl, seed_mask=seed_mask_bool, gt_lbl=lbl, confidence=confidence_map)
         result_stages["Graph Refine"] = lbl_graph
         current_lbl = lbl_graph
@@ -158,6 +184,7 @@ def validate_full_scene_logic(model, cfg, all_files):
     for f in all_files:
         data = np.load(f)
         res_dict = process_room_full_pipeline(cfg, model, data, return_all=True)
+        # Use best available stage
         stages = list(res_dict.keys())
         if 'GT' in stages: stages.remove('GT')
         pred = res_dict[stages[-1]]
@@ -172,7 +199,6 @@ def run_inference(cfg, model):
     dataset = S3DISDataset(cfg, split='inference')
     files = dataset.files
     
-    # [FIX] Define num_classes here!
     num_classes = cfg['dataset'].get('num_classes', 13)
     
     # Dummy run to get active stages
@@ -220,7 +246,6 @@ def run_inference(cfg, model):
             
         header = f"{'Room Name':<20} | " + " | ".join([f"{s:<18}" for s in eval_stages])
 
-    # Now num_classes is defined
     evals = {stage: IoUCalculator(num_classes) for stage in eval_stages}
     
     logger.info(header)

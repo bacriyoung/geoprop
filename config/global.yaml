@@ -11,7 +11,7 @@ project:
 
 # --- global ---
 train:
-  enable: true
+  enable: false
   epochs: 50
   batch_size: 8
   
@@ -48,7 +48,7 @@ model:
 # --- inference ---
 inference:
   enable: true
-  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20251231_210526/best_model.pth" 
+  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20251231_214559/best_model.pth" 
   
   save_img: true
   save_npy: false
