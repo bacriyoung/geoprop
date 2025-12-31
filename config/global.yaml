@@ -11,7 +11,7 @@ project:
 
 # --- global ---
 train:
-  enable: false
+  enable: true
   epochs: 50
   batch_size: 8
   
@@ -51,16 +51,18 @@ inference:
   checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20251231_214559/best_model.pth" 
   
   save_img: true
-  save_npy: false
+  save_npy: true
   
   vis_downsample: 60000
   vis_point_size: 20.0
 
   ablation_mode: true
-
+  
+  direct_inference:
+    save_output: true
   # [S1] TTA
   tta:
-    enabled: false
+    enabled: true
     rounds: 5
     jitter: 0.005 
     save_output: true
@@ -78,7 +80,7 @@ inference:
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
     confidence_threshold: 0.65
-    save_output: true
+    save_output: false
 
   # [S3] Graph Refine 
   graph_refine:
@@ -87,7 +89,7 @@ inference:
     fine_weight_xyz: 10.0
     k_neighbors: 8
     confidence_threshold: 0.65
-    save_output: true
+    save_output: false
 
   # [S4] Spatial Smooth
   spatial_smooth:
