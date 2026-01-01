@@ -1,7 +1,7 @@
 import sys
 import os
 
-# [V3.0 Fix] Add parent directory to path
+# Fix path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -14,20 +14,16 @@ from geoprop.core.inferencer import run_inference
 from geoprop.models.point_jafar import DecoupledPointJAFAR
 
 def print_config_summary(logger, cfg):
-    """Prints a beautiful summary of the configuration."""
     logger.info("="*80)
-    logger.info("GEOPROP PIPELINE CONFIGURATION SUMMARY (V3.0 Stable)")
+    logger.info("GEOPROP PIPELINE CONFIGURATION SUMMARY (V3.0 Compatible)")
     logger.info("="*80)
-    
-    # Project
     logger.info(f"Project Name    : {cfg['project']['name']}")
     logger.info(f"Target Dataset  : {cfg['project']['target_dataset']}")
     logger.info("-" * 80)
     
-    # V3.0 Switches
     tr = cfg['train']
     md = cfg['model']
-    logger.info(f"STRATEGY SETTINGS (V3.0)")
+    logger.info(f"STRATEGY SETTINGS")
     logger.info(f"  > Input Mode    : {md.get('input_mode', 'UNKNOWN').upper()}")
     logger.info(f"  > Dynamic Weight: {tr.get('use_dynamic_weights')}")
     logger.info(f"  > Seed Mode     : Train={'FIXED' if tr['seed_mode']['train'] else 'RANDOM'} | Val={'FIXED' if tr['seed_mode']['val'] else 'RANDOM'}")
@@ -37,16 +33,6 @@ def print_config_summary(logger, cfg):
         logger.info(f"TRAIN Enabled   : True (Epochs: {tr['epochs']}, Batch: {tr['batch_size']})")
     else:
         logger.info(f"TRAIN Enabled   : False")
-        
-    logger.info("-" * 80)
-    
-    inf = cfg['inference']
-    if inf['enable']:
-        logger.info(f"INFER Enabled   : True")
-        logger.info(f"  > Ablation    : {inf.get('ablation_mode')}")
-    else:
-        logger.info(f"INFER Enabled   : False")
-        
     logger.info("="*80)
 
 def main():
@@ -63,7 +49,6 @@ def main():
     from datetime import datetime
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # [V3.0 Fix] Correct key access
     dataset_name = cfg['project'].get('target_dataset', 's3dis')
     output_dir = os.path.join(args.output_root, dataset_name, timestamp)
     

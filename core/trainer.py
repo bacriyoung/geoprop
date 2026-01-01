@@ -53,10 +53,12 @@ def prepare_features(xyz, rgb, input_mode):
     else:
         raise ValueError("Unknown input_mode")
 
-def get_seeds(xyz, seed_mask, mode_fixed, label_ratio=0.001):
+def get_seeds(xyz, seed_mask, mode_fixed, label_ratio):
     B, _, N = xyz.shape
     M = max(int(N * label_ratio), 1)
+    
     if mode_fixed:
+        # [V3.0 Logic] Use fixed mask
         seed_indices_list = []
         for b in range(B):
             idx = torch.where(seed_mask[b])[0]
@@ -66,8 +68,9 @@ def get_seeds(xyz, seed_mask, mode_fixed, label_ratio=0.001):
                 pad = idx[0].repeat(M - len(idx))
                 idx = torch.cat([idx, pad])
             seed_indices_list.append(idx)
-        return torch.stack(seed_indices_list)
+        return torch.stack(seed_indices_list) 
     else:
+        # [V2.0 Logic] Random Permutation inside block (Ensures seeds exist!)
         seed_indices_list = [torch.randperm(N, device=xyz.device)[:M] for _ in range(B)]
         return torch.stack(seed_indices_list)
 
@@ -80,24 +83,23 @@ def validate_block_proxy(model, cfg, val_loader):
     num_classes = cfg['dataset'].get('num_classes', 13)
     evaluator = IoUCalculator(num_classes)
     limit = cfg['train'].get('val_sample_batches', 100)
+    
     input_mode = cfg['model']['input_mode']
     fixed_val = cfg['train']['seed_mode']['val']
     
     with torch.no_grad():
         for i, (xyz, sft, rgb, lbl, seed_mask) in enumerate(val_loader):
             if i >= limit: break
-            xyz = xyz.cuda().transpose(1, 2)
-            rgb = rgb.cuda().transpose(1, 2)
-            lbl = lbl.cuda()
+            xyz, sft, rgb, lbl = xyz.cuda().transpose(1, 2), sft.cuda().transpose(1, 2), rgb.cuda().transpose(1, 2), lbl.cuda()
             seed_mask = seed_mask.cuda()
             
             feat = prepare_features(xyz, rgb, input_mode)
-            seed_idx = get_seeds(xyz, seed_mask, fixed_val, cfg['dataset']['label_ratio'])
             
-            # [FIX] Correct unpacking [B, M]
+            # [CRITICAL] If fixed_val is False, this acts exactly like V2.0 randperm
+            seed_idx = get_seeds(xyz, seed_mask, fixed_val, cfg['dataset']['label_ratio'])
             B, M = seed_idx.shape
             
-            # [FIX] Robust Gather
+            # Gather inputs
             xyz_source = feat[:, :3, :] if input_mode == "absolute" else xyz
             xyz_lr = gather_points(xyz_source, seed_idx)
             feat_lr = gather_points(feat, seed_idx)
@@ -130,6 +132,7 @@ def run_training(cfg, save_path):
     crit_bce = nn.BCELoss()
     best_miou = 0.0
     val_mode = cfg['train'].get('val_mode', 'block_proxy')
+    
     input_mode = cfg['model']['input_mode']
     fixed_train = cfg['train']['seed_mode']['train']
     use_dyn_w = cfg['train']['use_dynamic_weights']
@@ -143,17 +146,16 @@ def run_training(cfg, save_path):
         model.train(); loss_acc = 0
         pbar = tqdm(train_loader, desc=f"Epoch {ep+1}", leave=False)
         
+        # [V2.0 COMPAT] Unpack 5 args, but 'seed_mask' is unused if seed_mode=False
         for i, (xyz, sft, rgb, lbl, seed_mask) in enumerate(pbar):
             xyz, sft, rgb, lbl = xyz.cuda().transpose(1,2), sft.cuda().transpose(1,2), rgb.cuda().transpose(1,2), lbl.cuda()
             seed_mask = seed_mask.cuda()
             
             feat = prepare_features(xyz, rgb, input_mode)
+            
+            # This function switches logic based on config
             seed_idx = get_seeds(xyz, seed_mask, fixed_train, cfg['dataset']['label_ratio'])
             
-            # [FIX] Correct unpacking
-            B, M = seed_idx.shape
-            
-            # [FIX] Robust Gather
             xyz_seeds = gather_points(xyz, seed_idx)
             rgb_seeds = gather_points(rgb, seed_idx)
             val_seeds_abs = torch.cat([xyz_seeds, rgb_seeds], dim=1)

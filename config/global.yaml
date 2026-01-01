@@ -1,5 +1,5 @@
 # ==============================================================================
-# Global Configuration (V3.0 Stable - Based on V2.0)
+# Global Configuration (V3.0 Final - Backward Compatible)
 # ==============================================================================
 
 project:
@@ -15,15 +15,13 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  # [V3.0 New Configs]
-  # 1. Dynamic Weights: True = Weakly Sup (Class Balanced), False = Self Sup (Standard)
-  use_dynamic_weights: true
+  # [V3.0 Features - Default OFF to match V2.0]
+  # Set these to TRUE only when you want V3.0 behavior
+  use_dynamic_weights: false
   
-  # 2. Seed Consistency:
-  # train: true = Overfit (Fixed Seeds), false = Generalize (Random)
-  # val:   true = Honest Val (Hard),     false = Proxy Val (Easy/Random)
+  # seed_mode: false = Random (V2.0 standard), true = Fixed (V3.0 Overfit)
   seed_mode:
-    train: false
+    train: false 
     val: false
   
   val_interval: 1
@@ -42,16 +40,14 @@ dataset:
   name: "s3dis"
   num_workers: 4
   label_ratio: 0.001
-  # Note: Paths are managed in config/s3dis/s3dis.yaml (V2.0 Logic)
+  # Paths managed in s3dis.yaml
 
 model:
   qk_dim: 128
   k_neighbors: 32
   
-  # [V3.0 New Config] Input Features
-  # "absolute": XYZ(3) + RGB(3) = 6 dim
-  # "gblobs":   GeoCov(9) + ColCov(9) = 18 dim (Default V2.0)
-  input_mode: "absolute" 
+  # [V3.0 Feature] "absolute" or "gblobs" (Default: gblobs for V2.0 match)
+  input_mode: "gblobs" 
 
 inference:
   enable: true
@@ -59,10 +55,9 @@ inference:
   save_img: true
   save_npy: true
   vis_downsample: 60000
-  vis_point_size: 20.0
   ablation_mode: true
 
-  # [V3.0 Fix] Added control for Direct Inference saving
+  # [V3.0 Fix] Added missing control
   direct_inference:
     save_output: true
 

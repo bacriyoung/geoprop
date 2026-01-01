@@ -4,7 +4,7 @@ import numpy as np
 import os
 import glob
 import yaml
-from tqdm import tqdm
+# [RESTORED] No tqdm here to match V2.0 logs
 import logging
 
 class S3DISDataset(Dataset):
@@ -12,64 +12,55 @@ class S3DISDataset(Dataset):
         self.cfg = cfg
         self.split = split
         
-        # 1. Load config/s3dis/s3dis.yaml
+        # 1. Load config
         config_path = os.path.join('config', 's3dis', 's3dis.yaml')
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Dataset config not found at {config_path}")
+            raise FileNotFoundError(f"Config not found: {config_path}")
             
         with open(config_path, 'r') as f:
             self.ds_cfg = yaml.safe_load(f)
             
-        # 2. Parse Config (Strictly matching your YAML structure)
-        # Structure: dataset -> root_dir
-        if 'dataset' not in self.ds_cfg:
-             raise KeyError("Your s3dis.yaml must have a top-level 'dataset' key.")
-             
-        ds_info = self.ds_cfg['dataset']
-        
-        # [FIX] Use 'root_dir' as in your yaml, NOT 'dataset_path'
+        ds_info = self.ds_cfg.get('dataset', {})
         self.root = ds_info.get('root_dir')
         if not self.root:
-            raise ValueError("'root_dir' is missing under 'dataset' in config/s3dis/s3dis.yaml")
+            raise ValueError("'dataset.root_dir' missing in s3dis.yaml")
 
         self.label_ratio = cfg['dataset'].get('label_ratio', ds_info.get('label_ratio', 0.001))
 
-        # 3. Load Files
-        self.files = self._get_files(ds_info)
+        # 2. Load Files
+        self.files, target_areas = self._get_files(ds_info)
         
         if len(self.files) == 0:
-            raise RuntimeError(f"[{split.upper()}] No files found in {self.root}. Check 'root_dir' and 'split' in s3dis.yaml!")
+            raise RuntimeError(f"[{split.upper()}] No files found in {self.root}!")
+
+        # [RESTORED] V2.0 Logging Style
+        print(f"[{split.upper()}] S3DIS Dataset: Loaded {len(self.files)} rooms from Areas {target_areas}")
 
         self.data_list = []
-        # Use simple print or logger
-        print(f"[{split.upper()}] Loading {len(self.files)} rooms from {self.root}...")
-        
-        for f in tqdm(self.files):
+        for f in self.files:
             self.data_list.append(np.load(f))
 
     def _get_files(self, ds_info):
         search_pattern = os.path.join(self.root, "**", "*.npy")
         all_files = sorted(glob.glob(search_pattern, recursive=True))
         
-        # [FIX] Access 'split' under 'dataset'
         split_cfg = ds_info.get('split', {})
         
         if self.split == 'train':
             target_areas = split_cfg.get('train_areas', [1, 2, 3, 4, 6])
         elif self.split == 'val':
             target_areas = split_cfg.get('val_areas', [5])
-        else: # inference
+        else:
             target_areas = split_cfg.get('inference_areas', [5])
             
-        filtered_files = []
+        filtered = []
         for f in all_files:
-            basename = os.path.basename(f)
-            for area_id in target_areas:
-                if f"Area_{area_id}_" in basename:
-                    filtered_files.append(f)
+            base = os.path.basename(f)
+            for a in target_areas:
+                if f"Area_{a}_" in base:
+                    filtered.append(f)
                     break
-        
-        return filtered_files
+        return filtered, target_areas
 
     def __len__(self):
         if self.split == 'train': return 4000 
@@ -84,6 +75,7 @@ class S3DISDataset(Dataset):
         colors = data[:, 3:6]
         labels = data[:, 6]
         
+        # Block Cropping
         while True:
             center = points[np.random.choice(N)]
             block_min = center - 1.0; block_max = center + 1.0
@@ -98,8 +90,7 @@ class S3DISDataset(Dataset):
         lbl = labels[mask]
         xyz_norm = xyz - xyz.min(0)
         
-        # --- Seed Generation (Hash) ---
-        # [FIX] Cast to int64 BEFORE XOR to avoid TypeError
+        # [V3.0 Logic] Coordinate Hash (Always computed, used only if config enabled)
         h1 = np.abs(xyz[:, 0] * 73856093).astype(np.int64)
         h2 = np.abs(xyz[:, 1] * 19349663).astype(np.int64)
         h3 = np.abs(xyz[:, 2] * 83492791).astype(np.int64)

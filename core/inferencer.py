@@ -24,14 +24,15 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     full_xyz_tensor = torch.from_numpy(xyz_full).float().cuda().unsqueeze(0).transpose(1, 2)
     full_rgb_tensor = torch.from_numpy(rgb_norm).float().cuda().unsqueeze(0).transpose(1, 2)
 
-    # --- Seed Generation (Hash based - V3.0 Fix) ---
-    # [FIX] Cast to int64 BEFORE XOR
+    # [V3.0 Logic] Hash Seeds (Matches Dataset logic)
     h1 = np.abs(xyz_full[:, 0] * 73856093).astype(np.int64)
     h2 = np.abs(xyz_full[:, 1] * 19349663).astype(np.int64)
     h3 = np.abs(xyz_full[:, 2] * 83492791).astype(np.int64)
     seed_hash = h1 ^ h2 ^ h3
     
     threshold = int(cfg['dataset']['label_ratio'] * 100000)
+    # If seed_mode is fixed, this matches training exactly.
+    # Even if seed_mode is random (V2), we use this for inference consistency anyway.
     is_seed = (seed_hash % 100000) < threshold
     
     global_seed_map = np.full(N, -1, dtype=int)
