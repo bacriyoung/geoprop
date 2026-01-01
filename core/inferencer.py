@@ -16,6 +16,8 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     xyz_full = data[:, :3]
     rgb_full = data[:, 3:6]
     lbl = data[:, 6].astype(int)
+    
+    # [FIX] Read num_classes from config
     num_classes = cfg['dataset'].get('num_classes', 13)
     input_mode = cfg['model']['input_mode']
     
@@ -24,13 +26,12 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     full_xyz_tensor = torch.from_numpy(xyz_full).float().cuda().unsqueeze(0).transpose(1, 2)
     full_rgb_tensor = torch.from_numpy(rgb_norm).float().cuda().unsqueeze(0).transpose(1, 2)
 
-    # --- Seed Hash (Matches Dataset logic) ---
+    # --- Seed Hash ---
     h1 = np.abs(xyz_full[:, 0] * 73856093).astype(np.int64)
     h2 = np.abs(xyz_full[:, 1] * 19349663).astype(np.int64)
     h3 = np.abs(xyz_full[:, 2] * 83492791).astype(np.int64)
     seed_hash = h1 ^ h2 ^ h3
     
-    # Get label ratio properly
     label_ratio = cfg['dataset'].get('label_ratio', 0.001)
     threshold = int(label_ratio * 100000)
     is_seed = (seed_hash % 100000) < threshold
@@ -75,10 +76,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     
                     with torch.no_grad():
                         if input_mode == "absolute":
-                            # [Fix 3: Input Domain Consistency]
-                            # Use 'cur' (centered XYZ) to match training!
-                            # Training uses xyz_centered, so inference must too.
-                            # Previous code used 'b_xyz' (absolute), which caused the crash.
+                            # Use 'cur' (Centered) to match training!
                             feat = torch.cat([cur, b_rgb], dim=1)
                         elif input_mode == "gblobs":
                             geo, col = compute_dual_gblobs(b_xyz, b_rgb, k=32)
@@ -96,7 +94,6 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     accum_counts[mask_indices] += 1
                     if t == 0: lbl_direct[mask_indices] = np.argmax(prob_np, axis=1)
 
-    # ... (Post-processing standard logic) ...
     valid_mask = accum_counts > 0
     lbl_tta = np.full(N, -100, dtype=int)
     if valid_mask.sum() > 0:
@@ -145,9 +142,11 @@ def validate_full_scene_logic(model, cfg, all_files):
 
 def run_inference(cfg, model):
     logger = logging.getLogger("geoprop")
-    logger.info(">>> [Phase 2] Final Inference (V3.0 Final Fixed)...")
+    logger.info(">>> [Phase 2] Final Inference (V3.0 Compatible)...")
     model.eval()
     dataset = S3DISDataset(cfg, split='inference')
+    
+    # [FIX] Read num_classes from config
     num_classes = cfg['dataset'].get('num_classes', 13)
     
     if len(dataset.files) > 0:
@@ -158,7 +157,6 @@ def run_inference(cfg, model):
     ablation_mode = cfg['inference'].get('ablation_mode', False)
     eval_stages = all_stages if ablation_mode else ([all_stages[-1]] if all_stages else [])
     
-    # [V3.0 Fix] Check saving switch
     stage_key_map = {
         "Direct Inference": "direct_inference",
         "TTA Integration": "tta",

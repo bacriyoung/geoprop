@@ -34,14 +34,35 @@ def compute_gradient_boundary(xyz, rgb, k=16):
     return (torch.cat(bdy_list, dim=1) > 0.15).float()
 
 def compute_class_weights(labels, num_classes=13):
-    weights = torch.ones(num_classes, device=labels.device)
+    """
+    Robust class weight computation that ignores invalid labels.
+    """
+    # 1. Flatten labels
     flat_lbl = labels.view(-1)
-    counts = torch.bincount(flat_lbl, minlength=num_classes).float()
-    total = counts.sum()
-    valid_mask = counts > 0
-    if valid_mask.sum() > 0:
-        weights[valid_mask] = total / (counts[valid_mask] * valid_mask.sum())
-        weights = torch.clamp(weights, 0.1, 10.0)
+    
+    # [FIX] Filter out labels that are out of bounds (e.g. 13, 255)
+    # We only care about classes [0, num_classes-1]
+    mask_valid = (flat_lbl >= 0) & (flat_lbl < num_classes)
+    flat_lbl = flat_lbl[mask_valid]
+    
+    # 2. Compute counts
+    # Initialize weights to 1.0 (default for missing classes)
+    weights = torch.ones(num_classes, device=labels.device)
+    
+    if flat_lbl.numel() > 0:
+        counts = torch.bincount(flat_lbl, minlength=num_classes).float()
+        
+        # [Safety] If bincount returns more than num_classes (shouldn't happen with filter, but safe guard)
+        counts = counts[:num_classes]
+        
+        total = counts.sum()
+        valid_mask = counts > 0
+        if valid_mask.sum() > 0:
+            # Inverse frequency weighting
+            weights[valid_mask] = total / (counts[valid_mask] * valid_mask.sum())
+            # Clip extreme weights for stability
+            weights = torch.clamp(weights, 0.1, 10.0)
+            
     return weights
 
 def prepare_features(xyz, rgb, input_mode):
@@ -137,10 +158,15 @@ def run_training(cfg, save_path):
     best_miou = 0.0
     val_mode = cfg['train'].get('val_mode', 'block_proxy')
     
+    # [FIX] Define configuration variables explicitly
     input_mode = cfg['model']['input_mode']
     fixed_train = cfg['train']['seed_mode']['train']
     use_dyn_w = cfg['train']['use_dynamic_weights']
     label_ratio = train_ds.label_ratio
+    
+    # [FIX] Get num_classes from config (Crucial Fix for NameError)
+    # Tries to get from dataset config, defaults to 13
+    num_classes = cfg['dataset'].get('num_classes', 13)
 
     all_files = []
     if val_mode == 'full_scene':
@@ -166,6 +192,7 @@ def run_training(cfg, save_path):
             loss_weights_per_point = 1.0
             if use_dyn_w:
                 lbl_seeds = torch.gather(lbl, 1, seed_idx)
+                # [FIX] Use the defined num_classes variable
                 class_weights = compute_class_weights(lbl_seeds, num_classes)
                 loss_weights_per_point = class_weights[lbl].unsqueeze(1)
             
