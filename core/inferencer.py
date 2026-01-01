@@ -16,7 +16,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     xyz_full = data[:, :3]
     rgb_full = data[:, 3:6]
     lbl = data[:, 6].astype(int)
-    num_classes = 13 
+    num_classes = cfg['dataset'].get('num_classes', 13)
     input_mode = cfg['model']['input_mode']
     
     rgb_norm = rgb_full/255.0 if rgb_full.max()>1.1 else rgb_full.copy()
@@ -148,7 +148,7 @@ def run_inference(cfg, model):
     logger.info(">>> [Phase 2] Final Inference (V3.0 Final Fixed)...")
     model.eval()
     dataset = S3DISDataset(cfg, split='inference')
-    num_classes = 13
+    num_classes = cfg['dataset'].get('num_classes', 13)
     
     if len(dataset.files) > 0:
         dummy_res = process_room_full_pipeline(cfg, model, np.load(dataset.files[0]), return_all=True)

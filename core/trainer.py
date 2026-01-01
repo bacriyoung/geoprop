@@ -78,7 +78,7 @@ def gather_points(tensor, indices):
 
 def validate_block_proxy(model, cfg, val_loader):
     model.eval()
-    num_classes = 13 # S3DIS Default
+    num_classes = cfg['dataset'].get('num_classes', 13)
     evaluator = IoUCalculator(num_classes)
     limit = cfg['train'].get('val_sample_batches', 100)
     
@@ -166,7 +166,7 @@ def run_training(cfg, save_path):
             loss_weights_per_point = 1.0
             if use_dyn_w:
                 lbl_seeds = torch.gather(lbl, 1, seed_idx)
-                class_weights = compute_class_weights(lbl_seeds, 13)
+                class_weights = compute_class_weights(lbl_seeds, num_classes)
                 loss_weights_per_point = class_weights[lbl].unsqueeze(1)
             
             opt.zero_grad()
