@@ -1,12 +1,12 @@
 # ==============================================================================
-# Global Configuration (V3.1 - The Hybrid & Configurable Branch)
+# Global Configuration (V3.0 Stable - Based on V2.0 Structure)
 # ==============================================================================
 
 project:
   name: "geoprop_v3_hybrid"
   seed: 42
   device: "cuda"
-  target_dataset: "s3dis"
+  target_dataset: "s3dis" # [Fixed] Maintained under project
 
 train:
   enable: true
@@ -15,17 +15,11 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  # [Core Switch 1: Dynamic Weights]
-  # true: Weakly-supervised mode (Good for overfitting/specific seeds)
-  # false: Self-supervised mode (Standard V2.0 logic)
+  # [V3.0 Feature Switches]
   use_dynamic_weights: true
-  
-  # [Core Switch 2: Seed Consistency]
-  # Control whether to use the fixed "Coordinate Hash" seeds or random seeds.
-  # If true, it guarantees the seeds are physically identical to inference.
   seed_mode:
-    train: true  # true = Overfit (Fixed), false = Generalize (Random)
-    val: true    # true = Honest Validation (Hard), false = Proxy Validation (Easy)
+    train: false  # true = Overfit (Fixed Seeds)
+    val: false    # true = Honest Validation
   
   val_interval: 1
   val_mode: "block_proxy" 
@@ -41,6 +35,7 @@ train:
 
 dataset:
   name: "s3dis"
+  # Paths are managed in config/s3dis/s3dis.yaml
   num_workers: 4
   label_ratio: 0.001
 
@@ -48,10 +43,8 @@ model:
   qk_dim: 128
   k_neighbors: 32
   
-  # [Core Switch 3: Input Feature Mode]
-  # "absolute": Input XYZ(3)+RGB(3) = 6 dim. Best for overfitting coordinates.
-  # "gblobs":   Input GeoCov(9)+ColorCov(9) = 18 dim. Best for generalization.
-  input_mode: "absolute" 
+  # [V3.0 Feature] "absolute" or "gblobs"
+  input_mode: "gblobs" 
 
 inference:
   enable: true
@@ -74,7 +67,7 @@ inference:
     enabled: false
     rec_err_strict: 0.08
     rec_err_loose: 0.15
-    save_output: false
+    save_output: true
 
   geometric_gating:
     enabled: true
@@ -82,7 +75,7 @@ inference:
     weights: {rgb: 15.0, xyz: 1.0}
     gate_strength: 5.0
     confidence_threshold: 0.65
-    save_output: true
+    save_output: false
 
   graph_refine:
     enabled: true
@@ -90,7 +83,7 @@ inference:
     fine_weight_xyz: 10.0
     k_neighbors: 8
     confidence_threshold: 0.65
-    save_output: true
+    save_output: false
 
   spatial_smooth:
     enabled: true

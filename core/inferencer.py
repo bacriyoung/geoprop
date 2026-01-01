@@ -12,11 +12,6 @@ from geoprop.utils.metrics import IoUCalculator, calc_local_metrics
 from geoprop.utils.visualizer import generate_viz, CLASS_NAMES
 
 def process_room_full_pipeline(cfg, model, data, return_all=False):
-    """
-    Hybrid Inference Pipeline (V3.1 Fixed)
-    - Supports dynamic input modes (Absolute/GBlobs)
-    - Uses coordinate hashing for perfectly consistent seeds
-    """
     N = len(data)
     xyz_full = data[:, :3]
     rgb_full = data[:, 3:6]
@@ -29,18 +24,18 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     full_xyz_tensor = torch.from_numpy(xyz_full).float().cuda().unsqueeze(0).transpose(1, 2)
     full_rgb_tensor = torch.from_numpy(rgb_norm).float().cuda().unsqueeze(0).transpose(1, 2)
 
-    # --- Universal Seed Generation (Hash-based) ---
-    # Matches Dataset logic exactly
-    seed_hash = (np.abs(xyz_full[:, 0] * 73856093) ^ 
-                 np.abs(xyz_full[:, 1] * 19349663) ^ 
-                 np.abs(xyz_full[:, 2] * 83492791)).astype(np.int64)
+    # --- Seed Generation (Hash based - Matching V3.0 Dataset) ---
+    # [FIX] Cast to int64 BEFORE XOR operation
+    h1 = np.abs(xyz_full[:, 0] * 73856093).astype(np.int64)
+    h2 = np.abs(xyz_full[:, 1] * 19349663).astype(np.int64)
+    h3 = np.abs(xyz_full[:, 2] * 83492791).astype(np.int64)
+    seed_hash = h1 ^ h2 ^ h3
+    
     threshold = int(cfg['dataset']['label_ratio'] * 100000)
     is_seed = (seed_hash % 100000) < threshold
     
-    # Global Seed Map (-1 if not seed, else label)
     global_seed_map = np.full(N, -1, dtype=int)
     global_seed_map[is_seed] = lbl[is_seed]
-    
     valid_global_seeds = np.where(is_seed)[0]
     
     accum_probs = np.zeros((N, num_classes), dtype=np.float32)
@@ -73,7 +68,6 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     current_seed_lbls = block_seed_labels[rel_seed_idx]
                     
                     with torch.no_grad():
-                        # Feature Computation
                         if input_mode == "absolute":
                             feat = torch.cat([b_xyz, b_rgb], dim=1)
                         elif input_mode == "gblobs":
@@ -96,7 +90,6 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     accum_counts[mask_indices] += 1
                     if t == 0: lbl_direct[mask_indices] = np.argmax(prob_np, axis=1)
 
-    # Post-processing
     valid_mask = accum_counts > 0
     lbl_tta = np.full(N, -100, dtype=int)
     if valid_mask.sum() > 0:
@@ -112,7 +105,6 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     if cfg['inference']['tta']['enabled']: result_stages["TTA Integration"] = lbl_tta
     current_lbl = lbl_tta
     
-    # Modules
     if cfg['inference']['geometric_gating']['enabled']:
         current_lbl = geometric_gating.run(cfg['inference']['geometric_gating'], xyz_full, rgb_full, current_lbl, confidence=confidence_map)
         result_stages["Geometric Gating"] = current_lbl
@@ -139,15 +131,14 @@ def validate_full_scene_logic(model, cfg, all_files):
     for f in all_files:
         data = np.load(f)
         res_dict = process_room_full_pipeline(cfg, model, data, return_all=True)
-        # Use last prediction
-        pred = list(res_dict.values())[-2] 
+        pred = list(res_dict.values())[-2]
         evaluator.update(pred, res_dict['GT'])
     _, miou, _ = evaluator.compute()
     return miou
 
 def run_inference(cfg, model):
     logger = logging.getLogger("geoprop")
-    logger.info(">>> [Phase 2] Final Inference (V3.1 Hybrid - Fixed)...")
+    logger.info(">>> [Phase 2] Final Inference (V3.0 Stable)...")
     model.eval()
     dataset = S3DISDataset(cfg, split='inference')
     num_classes = cfg['dataset'].get('num_classes', 13)
@@ -160,7 +151,6 @@ def run_inference(cfg, model):
     ablation_mode = cfg['inference'].get('ablation_mode', False)
     eval_stages = all_stages if ablation_mode else ([all_stages[-1]] if all_stages else [])
     
-    # [FIX] Helper to check saving config
     stage_key_map = {
         "Direct Inference": "direct_inference",
         "TTA Integration": "tta",
@@ -171,10 +161,8 @@ def run_inference(cfg, model):
     
     evals = {stage: IoUCalculator(num_classes) for stage in eval_stages}
     
-    # Pre-create dirs
     if cfg['inference']['save_npy'] and ablation_mode:
         for stage in eval_stages:
-            # Check individual switch
             key = stage_key_map.get(stage)
             if key and cfg['inference'].get(key, {}).get('save_output', False):
                 os.makedirs(os.path.join(cfg['paths']['npy'], stage.replace(" ", "_")), exist_ok=True)
@@ -198,7 +186,6 @@ def run_inference(cfg, model):
             
         if cfg['inference']['save_npy']:
             for stage in eval_stages:
-                # [FIX] Check individual switch before saving!
                 key = stage_key_map.get(stage)
                 if key and cfg['inference'].get(key, {}).get('save_output', False):
                     save_data = data.copy(); save_data[:, 6] = res[stage]
@@ -206,7 +193,7 @@ def run_inference(cfg, model):
                     np.save(path, save_data)
                 
     logger.info("\n" + "="*100)
-    logger.info("FINAL PER-CLASS EVALUATION (GLOBAL)")
+    logger.info("FINAL PER-CLASS EVALUATION")
     
     ious_dict = {}
     miou_dict = {}
@@ -218,7 +205,6 @@ def run_inference(cfg, model):
         miou_dict[stage] = miou
         oa_dict[stage] = oa
     
-    # [FIX] Restored Per-Class Table
     header_row = f"{'Class':<12} | " + " | ".join([f"{s:<18}" for s in eval_stages])
     logger.info(header_row)
     logger.info("-" * len(header_row))

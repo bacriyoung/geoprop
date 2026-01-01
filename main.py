@@ -1,162 +1,106 @@
 import sys
 import os
-import yaml
+
+# [CRITICAL FIX] Add parent directory to path to fix ModuleNotFoundError
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
+import yaml
 import torch
-import datetime
-
-# ==============================================================================
-# Path Injection
-# Ensure 'geoprop' package is importable when running from the root directory.
-# ==============================================================================
-current_dir = os.path.dirname(os.path.abspath(__file__)) # .../geoprop
-parent_dir = os.path.dirname(current_dir)                # .../Project_Root
-sys.path.append(parent_dir)
-
+import logging
 from geoprop.utils.logger import setup_logger
 from geoprop.core.trainer import run_training
 from geoprop.core.inferencer import run_inference
 from geoprop.models.point_jafar import DecoupledPointJAFAR
 
-def load_config(args):
-    """
-    Load Global Config and merge with Dataset Specific Config.
-    """
-    if not os.path.exists(args.global_config):
-        raise FileNotFoundError(f"Global config not found at: {args.global_config}")
-
-    with open(args.global_config, 'r') as f:
-        cfg = yaml.safe_load(f)
-    
-    target_dataset = cfg['project']['target_dataset']
-    
-    # Locate dataset config dynamically
-    base_conf_dir = os.path.dirname(os.path.abspath(args.global_config))
-    dataset_config_path = os.path.join(
-        base_conf_dir, 
-        target_dataset, 
-        f"{target_dataset}.yaml"
-    )
-    
-    if not os.path.exists(dataset_config_path):
-        raise FileNotFoundError(f"Dataset config not found at: {dataset_config_path}")
-        
-    with open(dataset_config_path, 'r') as f:
-        dataset_cfg = yaml.safe_load(f)
-        
-    # Merge configurations
-    cfg['dataset'] = dataset_cfg['dataset']
-    return cfg
-
-def prepare_output_dirs(cfg, timestamp):
-    """
-    Generate output directory structure with timestamp.
-    """
-    root_dir = os.path.dirname(os.path.abspath(__file__))
-    base_output = os.path.join(root_dir, "outputs", cfg['dataset']['name'], timestamp)
-    
-    dirs = {
-        'root': base_output,
-        'logs': os.path.join(base_output, 'logs'),
-        'viz': os.path.join(base_output, 'viz'),
-        'npy': os.path.join(base_output, 'pseudo_labels')
-    }
-    
-    for d in dirs.values():
-        os.makedirs(d, exist_ok=True)
-        
-    return dirs
-
-def log_key_config(cfg, logger):
-    """
-    Log essential configuration parameters for quick reference.
-    """
+def print_config_summary(logger, cfg):
+    """Prints a summary of the configuration."""
     logger.info("="*80)
-    logger.info(f"GEOPROP PIPELINE CONFIGURATION SUMMARY")
+    logger.info("GEOPROP PIPELINE CONFIGURATION SUMMARY (V3.0 Stable)")
     logger.info("="*80)
-    logger.info(f"Project Name   : {cfg['project']['name']}")
-    logger.info(f"Dataset        : {cfg['dataset']['name']} (Classes: {cfg['dataset'].get('num_classes', 'Unknown')})")
-    logger.info(f"Root Dir       : {cfg['dataset']['root_dir']}")
-    logger.info(f"Label Ratio    : {cfg['dataset']['label_ratio']}")
+    
+    # Project & Data
+    # [FIX] Correctly access nested keys
+    logger.info(f"Project Name    : {cfg['project']['name']}")
+    logger.info(f"Target Dataset  : {cfg['project']['target_dataset']}")
     logger.info("-" * 80)
-    logger.info(f"TRAIN Enabled  : {cfg['train']['enable']}")
-    if cfg['train']['enable']:
-        logger.info(f"  Epochs       : {cfg['train']['epochs']}")
-        logger.info(f"  Batch Size   : {cfg['train']['batch_size']}")
+    
+    # V3.1 Switches
+    tr = cfg['train']
+    md = cfg['model']
+    logger.info(f"STRATEGY SETTINGS")
+    logger.info(f"  > Input Mode    : {md.get('input_mode', 'UNKNOWN').upper()}")
+    logger.info(f"  > Dynamic Weight: {tr.get('use_dynamic_weights')}")
+    logger.info(f"  > Seed Mode     : Train={'FIXED' if tr['seed_mode']['train'] else 'RANDOM'} | Val={'FIXED' if tr['seed_mode']['val'] else 'RANDOM'}")
     logger.info("-" * 80)
-    logger.info(f"INFER Enabled  : {cfg['inference']['enable']}")
-    if cfg['inference']['enable']:
-        inf = cfg['inference']
-        logger.info(f"  Ablation Mode: {inf.get('ablation_mode', False)}")
-        logger.info(f"  TTA          : {inf['tta']['enabled']} (Rounds: {inf['tta']['rounds']})")
-        logger.info(f"  Conf. Filter : {inf['confidence_filter']['enabled']} (Strict: {inf['confidence_filter']['rec_err_strict']}, Loose: {inf['confidence_filter']['rec_err_loose']})")
-        logger.info(f"  Geo. Gating  : {inf['geometric_gating']['enabled']} (Str: {inf['geometric_gating']['gate_strength']}, Conf: {inf['geometric_gating'].get('confidence_threshold')})")
-        logger.info(f"  Graph Refine : {inf['graph_refine']['enabled']} (Voxel: {inf['graph_refine']['fine_voxel_n']})")
-        logger.info(f"  Spatial Sm.  : {inf['spatial_smooth']['enabled']}")
+    
+    if tr['enable']:
+        logger.info(f"TRAIN Enabled   : True (Epochs: {tr['epochs']}, Batch: {tr['batch_size']})")
+    else:
+        logger.info(f"TRAIN Enabled   : False")
+        
+    logger.info("-" * 80)
+    
+    inf = cfg['inference']
+    if inf['enable']:
+        logger.info(f"INFER Enabled   : True")
+        logger.info(f"  > Ablation    : {inf.get('ablation_mode')}")
+    else:
+        logger.info(f"INFER Enabled   : False")
+        
     logger.info("="*80)
 
 def main():
     parser = argparse.ArgumentParser()
-    default_config = os.path.join(os.path.dirname(__file__), 'config/global.yaml')
-    parser.add_argument('--global_config', type=str, default=default_config)
+    parser.add_argument('--config', type=str, default='config/global.yaml')
+    parser.add_argument('--output_root', type=str, default='outputs')
     args = parser.parse_args()
+
+    # Load Config
+    with open(args.config, 'r') as f: 
+        cfg = yaml.safe_load(f)
     
-    # 0. Generate timestamp
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Setup Paths
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # 1. Load config
-    cfg = load_config(args)
+    # [CRITICAL FIX] Correctly access 'target_dataset' under 'project'
+    dataset_name = cfg['project'].get('target_dataset', 's3dis')
+    output_dir = os.path.join(args.output_root, dataset_name, timestamp)
     
-    # 2. Prepare directories
-    out_dirs = prepare_output_dirs(cfg, timestamp)
-    cfg['paths'] = out_dirs 
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'viz'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'npy'), exist_ok=True)
     
-    # Update project root output for trainer
-    cfg['project']['root_output'] = out_dirs['root']
+    cfg['paths'] = {
+        'output': output_dir, 
+        'viz': os.path.join(output_dir, 'viz'), 
+        'npy': os.path.join(output_dir, 'npy')
+    }
     
-    # 3. Setup Logger
-    log_filename = f"pipeline_{timestamp}.log"
-    logger = setup_logger(out_dirs['logs'], log_filename=log_filename)
-    
+    # Setup Logger
+    logger = setup_logger(output_dir)
     logger.info(f"Task Started at: {timestamp}")
     
-    # 4. Log Key Configuration [New Feature]
-    log_key_config(cfg, logger)
-    
-    trained_model = None
-    
-    # Phase 1: Training
+    # Print Summary
+    print_config_summary(logger, cfg)
+
+    # Train
     if cfg['train']['enable']:
-        save_path = os.path.join(out_dirs['root'], "best_model.pth")
-        trained_model = run_training(cfg, save_path)
-    
-    # Phase 2: Inference
+        trained_model = run_training(cfg, os.path.join(output_dir, 'best_model.pth'))
+    else:
+        logger.info(f"Loading checkpoint from: {cfg['inference']['checkpoint_path']}")
+        model_args = {
+            'qk_dim': cfg['model']['qk_dim'],
+            'k_neighbors': cfg['model']['k_neighbors'],
+            'input_mode': cfg['model']['input_mode']
+        }
+        trained_model = DecoupledPointJAFAR(**model_args).cuda()
+        trained_model.load_state_dict(torch.load(cfg['inference']['checkpoint_path']))
+
+    # Inference
     if cfg['inference']['enable']:
-        if trained_model is None:
-            local_ckpt = os.path.join(out_dirs['root'], "best_model.pth")
-            cfg_ckpt = cfg['inference'].get('checkpoint_path')
-            
-            if os.path.exists(local_ckpt):
-                ckpt_path = local_ckpt
-            elif cfg_ckpt and os.path.exists(cfg_ckpt):
-                ckpt_path = cfg_ckpt
-            else:
-                ckpt_path = None
-            
-            if not ckpt_path:
-                logger.error(f"Training skipped and No Checkpoint found at local: {local_ckpt} or config: {cfg_ckpt}")
-                return
-            
-            logger.info(f"Loading weights from: {ckpt_path}")
-            model = DecoupledPointJAFAR(cfg['model']['qk_dim'], cfg['model']['k_neighbors']).to(cfg['project']['device'])
-            model.load_state_dict(torch.load(ckpt_path))
-            trained_model = model
-            
         run_inference(cfg, trained_model)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
+    main()
