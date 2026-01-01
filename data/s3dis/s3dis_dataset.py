@@ -10,25 +10,24 @@ class S3DISDataset(Dataset):
         self.cfg = cfg
         self.split = split
         
-        # [V2.0 Logic] Retrieve params from the MERGED config (done in main.py)
+        # [Fix 1: Remove Redundancy] 
+        # Directly use the merged config from main.py
         ds_cfg = cfg['dataset']
         
         self.root = ds_cfg.get('root_dir')
         if not self.root:
-            raise ValueError("root_dir not found in config. Check main.py merging logic.")
+            # Fallback check
+            raise ValueError("root_dir not found in config. Ensure s3dis.yaml is merged in main.py")
             
-        # [RESTORED] V2.0 Defaults
         self.num_points = ds_cfg.get('num_points', 24000)
         self.block_size = ds_cfg.get('block_size', 2.0)
         self.label_ratio = ds_cfg.get('label_ratio', 0.001)
 
-        # Load Files
         self.files, target_areas = self._get_files(ds_cfg)
         
         if len(self.files) == 0:
             raise RuntimeError(f"[{split.upper()}] No files found in {self.root}!")
 
-        # [V2.0 Log Style]
         print(f"[{split.upper()}] S3DIS Dataset: Loaded {len(self.files)} rooms from Areas {target_areas}")
 
         self.data_list = []
@@ -41,14 +40,8 @@ class S3DISDataset(Dataset):
         
         # Access split config (merged)
         split_cfg = ds_cfg.get('split', {})
-        
         if not split_cfg:
-             # Fallback
-             split_cfg = {
-                 'train_areas': [1, 2, 3, 4, 6],
-                 'val_areas': [5],
-                 'inference_areas': [5]
-             }
+             split_cfg = {'train_areas': [1,2,3,4,6], 'val_areas': [5], 'inference_areas': [5]}
 
         if self.split == 'train': areas = split_cfg['train_areas']
         elif self.split == 'val': areas = split_cfg['val_areas']
@@ -64,7 +57,6 @@ class S3DISDataset(Dataset):
         return filtered, areas
 
     def __len__(self):
-        # [RESTORED] V2.0 Logic: 5x for training
         return len(self.files) * (5 if self.split == 'train' else 1)
 
     def __getitem__(self, idx):
@@ -75,7 +67,7 @@ class S3DISDataset(Dataset):
         data = self.data_list[room_idx]
         
         N = data.shape[0]
-        # [RESTORED] V2.0 Sampling Logic (Center Crop)
+        # Center Crop (Standard V2)
         center_idx = np.random.choice(N)
         center = data[center_idx, :3]
         
@@ -83,7 +75,7 @@ class S3DISDataset(Dataset):
                       (data[:, :3] <= center + self.block_size/2), axis=1)
         block_data = data[mask]
         
-        # [RESTORED] Resampling to 24000
+        # Resample
         if len(block_data) < self.num_points: 
             choice = np.random.choice(len(block_data), self.num_points, replace=True)
         else: 
@@ -96,6 +88,19 @@ class S3DISDataset(Dataset):
         
         if rgb.max() > 1.1: rgb /= 255.0
 
+        # [Fix 2: Critical Logic Fix]
+        # Compute Seed Hash BEFORE Augmentation.
+        # This ensures the seeds are physically tied to the original geometry.
+        # Even if we jitter the points later, 'seed_mask' remains true for the same physical points.
+        h1 = np.abs(xyz[:, 0] * 73856093).astype(np.int64)
+        h2 = np.abs(xyz[:, 1] * 19349663).astype(np.int64)
+        h3 = np.abs(xyz[:, 2] * 83492791).astype(np.int64)
+        seed_hash = h1 ^ h2 ^ h3
+        threshold = int(self.label_ratio * 100000)
+        is_seed = (seed_hash % 100000) < threshold
+        seed_mask = torch.from_numpy(is_seed.astype(bool))
+
+        # [Augmentation] Now we can jitter safely
         if self.split == 'train' and self.cfg['train']['augmentation']['enabled']:
             np.random.seed() 
             sigma = self.cfg['train']['augmentation']['jitter_sigma']
@@ -106,22 +111,12 @@ class S3DISDataset(Dataset):
         rgb_t = torch.from_numpy(rgb).float()
         lbl_t = torch.from_numpy(lbl).long()
         
-        # [RESTORED] Normalization & Centering
+        # Normalize & Center
         xyz_min = xyz_t.min(0)[0]
         xyz_max = xyz_t.max(0)[0]
         xyz_norm = (xyz_t - xyz_min) / (xyz_max - xyz_min + 1e-6)
         
-        sft_feat = torch.cat([rgb_t, xyz_norm], dim=1) # [N, 6]
-        xyz_centered = xyz_t - xyz_t.mean(0) # [N, 3] Center at 0
-        
-        # [V3.0 Add-on] Seed Hash (Does not affect V2 logic)
-        h1 = np.abs(xyz[:, 0] * 73856093).astype(np.int64)
-        h2 = np.abs(xyz[:, 1] * 19349663).astype(np.int64)
-        h3 = np.abs(xyz[:, 2] * 83492791).astype(np.int64)
-        seed_hash = h1 ^ h2 ^ h3
-        
-        threshold = int(self.label_ratio * 100000)
-        is_seed = (seed_hash % 100000) < threshold
-        seed_mask = torch.from_numpy(is_seed.astype(bool))
+        sft_feat = torch.cat([rgb_t, xyz_norm], dim=1) 
+        xyz_centered = xyz_t - xyz_t.mean(0) 
         
         return xyz_centered, sft_feat, rgb_t, lbl_t, seed_mask

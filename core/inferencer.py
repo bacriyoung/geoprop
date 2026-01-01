@@ -24,12 +24,14 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     full_xyz_tensor = torch.from_numpy(xyz_full).float().cuda().unsqueeze(0).transpose(1, 2)
     full_rgb_tensor = torch.from_numpy(rgb_norm).float().cuda().unsqueeze(0).transpose(1, 2)
 
+    # --- Seed Hash (Matches Dataset logic) ---
     h1 = np.abs(xyz_full[:, 0] * 73856093).astype(np.int64)
     h2 = np.abs(xyz_full[:, 1] * 19349663).astype(np.int64)
     h3 = np.abs(xyz_full[:, 2] * 83492791).astype(np.int64)
     seed_hash = h1 ^ h2 ^ h3
     
-    label_ratio = 0.001
+    # Get label ratio properly
+    label_ratio = cfg['dataset'].get('label_ratio', 0.001)
     threshold = int(label_ratio * 100000)
     is_seed = (seed_hash % 100000) < threshold
     
@@ -66,21 +68,26 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     
                     current_seed_lbls = block_seed_labels[rel_seed_idx]
                     
+                    # Prepare relative coordinates (Centering)
+                    block_center = b_xyz.mean(2, keepdim=True)
+                    loc = ls_xyz = b_xyz[:, :, rel_seed_idx] - block_center
+                    cur = b_xyz - block_center
+                    
                     with torch.no_grad():
                         if input_mode == "absolute":
-                            feat = torch.cat([b_xyz, b_rgb], dim=1)
+                            # [Fix 3: Input Domain Consistency]
+                            # Use 'cur' (centered XYZ) to match training!
+                            # Training uses xyz_centered, so inference must too.
+                            # Previous code used 'b_xyz' (absolute), which caused the crash.
+                            feat = torch.cat([cur, b_rgb], dim=1)
                         elif input_mode == "gblobs":
                             geo, col = compute_dual_gblobs(b_xyz, b_rgb, k=32)
                             feat = torch.cat([geo, col], dim=1)
                         
                         feat_seeds = feat[:, :, rel_seed_idx]
-                        ls_xyz = b_xyz[:, :, rel_seed_idx]
                         
                         ls_val_sem = torch.zeros(1, num_classes, len(rel_seed_idx)).cuda()
                         ls_val_sem.scatter_(1, torch.from_numpy(current_seed_lbls).long().cuda().unsqueeze(0).unsqueeze(1), 1.0)
-                        
-                        loc = ls_xyz - b_xyz.mean(2, keepdim=True)
-                        cur = b_xyz - b_xyz.mean(2, keepdim=True)
                         
                         probs, _ = model(cur, loc, ls_val_sem, feat, feat_seeds)
                     
@@ -89,6 +96,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     accum_counts[mask_indices] += 1
                     if t == 0: lbl_direct[mask_indices] = np.argmax(prob_np, axis=1)
 
+    # ... (Post-processing standard logic) ...
     valid_mask = accum_counts > 0
     lbl_tta = np.full(N, -100, dtype=int)
     if valid_mask.sum() > 0:
@@ -137,7 +145,7 @@ def validate_full_scene_logic(model, cfg, all_files):
 
 def run_inference(cfg, model):
     logger = logging.getLogger("geoprop")
-    logger.info(">>> [Phase 2] Final Inference (V3.0 Compatible)...")
+    logger.info(">>> [Phase 2] Final Inference (V3.0 Final Fixed)...")
     model.eval()
     dataset = S3DISDataset(cfg, split='inference')
     num_classes = 13
@@ -150,6 +158,7 @@ def run_inference(cfg, model):
     ablation_mode = cfg['inference'].get('ablation_mode', False)
     eval_stages = all_stages if ablation_mode else ([all_stages[-1]] if all_stages else [])
     
+    # [V3.0 Fix] Check saving switch
     stage_key_map = {
         "Direct Inference": "direct_inference",
         "TTA Integration": "tta",
