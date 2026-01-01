@@ -1,12 +1,12 @@
 # ==============================================================================
-# Global Configuration (V3.0 Final - Backward Compatible)
+# Global Configuration (V3.0 Final - No Redundancy)
 # ==============================================================================
 
 project:
   name: "geoprop_v3_stable"
   seed: 42
   device: "cuda"
-  target_dataset: "s3dis"
+  target_dataset: "s3dis" # Links to config/s3dis/s3dis.yaml
 
 train:
   enable: true
@@ -15,11 +15,12 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  # Default V2.0 Behavior
-  use_dynamic_weights: true
+  # [V3.0 Features - Default OFF for V2.0 Compatibility]
+  use_dynamic_weights: false
+  
   seed_mode:
-    train: true 
-    val: true
+    train: false # False = Random (V2.0)
+    val: false   # False = Random (V2.0)
   
   val_interval: 1
   val_mode: "block_proxy" 
@@ -36,12 +37,13 @@ train:
 dataset:
   name: "s3dis"
   num_workers: 4
-  label_ratio: 0.001
+  # [Clean] label_ratio removed from here. It is fetched from s3dis.yaml by main.py
 
 model:
   qk_dim: 128
   k_neighbors: 32
-  input_mode: "absolute" # Default "absolute" or "gblobs"
+  # [V3.0 Feature]
+  input_mode: "gblobs" 
 
 inference:
   enable: true
@@ -51,7 +53,6 @@ inference:
   vis_downsample: 60000
   ablation_mode: true
 
-  # [V3.0 Fix] Added missing control
   direct_inference:
     save_output: true
 

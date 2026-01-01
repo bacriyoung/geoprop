@@ -16,7 +16,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     xyz_full = data[:, :3]
     rgb_full = data[:, 3:6]
     lbl = data[:, 6].astype(int)
-    num_classes = cfg['dataset'].get('num_classes', 13)
+    num_classes = 13 
     input_mode = cfg['model']['input_mode']
     
     rgb_norm = rgb_full/255.0 if rgb_full.max()>1.1 else rgb_full.copy()
@@ -24,13 +24,13 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     full_xyz_tensor = torch.from_numpy(xyz_full).float().cuda().unsqueeze(0).transpose(1, 2)
     full_rgb_tensor = torch.from_numpy(rgb_norm).float().cuda().unsqueeze(0).transpose(1, 2)
 
-    # --- Seed Hash ---
     h1 = np.abs(xyz_full[:, 0] * 73856093).astype(np.int64)
     h2 = np.abs(xyz_full[:, 1] * 19349663).astype(np.int64)
     h3 = np.abs(xyz_full[:, 2] * 83492791).astype(np.int64)
     seed_hash = h1 ^ h2 ^ h3
     
-    threshold = int(cfg['dataset']['label_ratio'] * 100000)
+    label_ratio = 0.001
+    threshold = int(label_ratio * 100000)
     is_seed = (seed_hash % 100000) < threshold
     
     global_seed_map = np.full(N, -1, dtype=int)
@@ -79,8 +79,6 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                         ls_val_sem = torch.zeros(1, num_classes, len(rel_seed_idx)).cuda()
                         ls_val_sem.scatter_(1, torch.from_numpy(current_seed_lbls).long().cuda().unsqueeze(0).unsqueeze(1), 1.0)
                         
-                        # [NOTE] V2.0 used centered coordinates.
-                        # Inferencer logic: loc = local - center. This is consistent.
                         loc = ls_xyz - b_xyz.mean(2, keepdim=True)
                         cur = b_xyz - b_xyz.mean(2, keepdim=True)
                         
@@ -127,7 +125,7 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
 
 def validate_full_scene_logic(model, cfg, all_files):
     model.eval()
-    num_classes = cfg['dataset'].get('num_classes', 13)
+    num_classes = 13
     evaluator = IoUCalculator(num_classes)
     for f in all_files:
         data = np.load(f)
@@ -139,10 +137,10 @@ def validate_full_scene_logic(model, cfg, all_files):
 
 def run_inference(cfg, model):
     logger = logging.getLogger("geoprop")
-    logger.info(">>> [Phase 2] Final Inference (V3.0 Final)...")
+    logger.info(">>> [Phase 2] Final Inference (V3.0 Compatible)...")
     model.eval()
     dataset = S3DISDataset(cfg, split='inference')
-    num_classes = cfg['dataset'].get('num_classes', 13)
+    num_classes = 13
     
     if len(dataset.files) > 0:
         dummy_res = process_room_full_pipeline(cfg, model, np.load(dataset.files[0]), return_all=True)

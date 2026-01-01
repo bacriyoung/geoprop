@@ -46,7 +46,6 @@ def compute_class_weights(labels, num_classes=13):
 
 def prepare_features(xyz, rgb, input_mode):
     if input_mode == "absolute":
-        # xyz is already centered from dataset, but that's fine for features
         return torch.cat([xyz, rgb], dim=1) 
     elif input_mode == "gblobs":
         geo, col = compute_dual_gblobs(xyz, rgb, k=32)
@@ -54,69 +53,67 @@ def prepare_features(xyz, rgb, input_mode):
     else:
         raise ValueError("Unknown input_mode")
 
+def get_seeds(xyz, seed_mask, mode_fixed, label_ratio):
+    B, _, N = xyz.shape
+    M = max(int(N * label_ratio), 1)
+    if mode_fixed:
+        seed_indices_list = []
+        for b in range(B):
+            idx = torch.where(seed_mask[b])[0]
+            if len(idx) == 0: idx = torch.tensor([0], device=xyz.device) 
+            if len(idx) >= M: idx = idx[:M]
+            else:
+                pad = idx[0].repeat(M - len(idx))
+                idx = torch.cat([idx, pad])
+            seed_indices_list.append(idx)
+        return torch.stack(seed_indices_list)
+    else:
+        # [V2.0 Legacy] Random Permutation
+        seed_indices_list = [torch.randperm(N, device=xyz.device)[:M] for _ in range(B)]
+        return torch.stack(seed_indices_list)
+
 def gather_points(tensor, indices):
     C = tensor.shape[1]
     return torch.gather(tensor, 2, indices.unsqueeze(1).expand(-1, C, -1))
 
 def validate_block_proxy(model, cfg, val_loader):
     model.eval()
-    num_classes = cfg['dataset'].get('num_classes', 13)
+    num_classes = 13 # S3DIS Default
     evaluator = IoUCalculator(num_classes)
     limit = cfg['train'].get('val_sample_batches', 100)
     
     input_mode = cfg['model']['input_mode']
     fixed_val = cfg['train']['seed_mode']['val']
+    label_ratio = val_loader.dataset.label_ratio
     
     with torch.no_grad():
         for i, (xyz, sft, rgb, lbl, seed_mask) in enumerate(val_loader):
             if i >= limit: break
-            # xyz is CENTERED from dataset
-            xyz = xyz.cuda().transpose(1, 2)
-            rgb = rgb.cuda().transpose(1, 2)
-            lbl = lbl.cuda()
+            xyz, sft, rgb, lbl = xyz.cuda().transpose(1, 2), sft.cuda().transpose(1, 2), rgb.cuda().transpose(1, 2), lbl.cuda()
             seed_mask = seed_mask.cuda()
             
             feat = prepare_features(xyz, rgb, input_mode)
             
-            # [V2.0 LOGIC RESTORED]
+            # [V2.0 LOGIC RESTORED] Validation determinism
             if not fixed_val:
-                # Deterministic random seeds per block (Matches V2.0 exactly)
                 g_cpu = torch.Generator(); g_cpu.manual_seed(i)
-                M = max(int(xyz.shape[2] * cfg['dataset']['label_ratio']), 1)
-                # Generate same perm as V2.0
+                M = max(int(xyz.shape[2] * label_ratio), 1)
+                # Same random seeds for entire batch step
                 perm = torch.randperm(xyz.shape[2], generator=g_cpu)[:M].to(xyz.device)
-                seed_idx = perm.unsqueeze(0).expand(xyz.shape[0], -1) # Broad-cast or per batch?
-                # Actually V2.0 did: perm = ...; xyz_lr = xyz[:,:,perm]
-                # So it used same seeds for all batches in that step?
-                # V2.0 code: perm = torch.randperm(...)[:M]; xyz_lr = xyz[:,:,perm]
-                # Yes, same perm for the batch. Let's replicate.
                 seed_idx = perm.unsqueeze(0).repeat(xyz.shape[0], 1)
             else:
-                # [V3.0 Logic]
-                M = max(int(xyz.shape[2] * cfg['dataset']['label_ratio']), 1)
-                idx_list = []
-                for b in range(xyz.shape[0]):
-                    idxs = torch.where(seed_mask[b])[0]
-                    if len(idxs)==0: idxs = torch.tensor([0], device=xyz.device)
-                    if len(idxs)>=M: idxs = idxs[:M]
-                    else: idxs = torch.cat([idxs, idxs[0].repeat(M-len(idxs))])
-                    idx_list.append(idxs)
-                seed_idx = torch.stack(idx_list)
+                seed_idx = get_seeds(xyz, seed_mask, True, label_ratio)
 
-            B, M = seed_idx.shape
-            
-            # Gather
-            xyz_source = feat[:, :3, :] if input_mode == "absolute" else xyz
-            xyz_lr = gather_points(xyz_source, seed_idx)
+            xyz_lr = gather_points(feat[:,:3,:] if input_mode=='absolute' else xyz, seed_idx)
             feat_lr = gather_points(feat, seed_idx)
             
             lbl_lr = torch.gather(lbl, 1, seed_idx)
-            val_lr = torch.zeros(B, num_classes, M).cuda().scatter_(1, lbl_lr.unsqueeze(1), 1.0)
+            val_lr = torch.zeros(xyz.shape[0], num_classes, seed_idx.shape[1]).cuda().scatter_(1, lbl_lr.unsqueeze(1), 1.0)
             
             probs, _ = model(xyz, xyz_lr, val_lr, feat, feat_lr)
             pred = torch.argmax(probs, dim=1)
             
-            for b in range(B):
+            for b in range(xyz.shape[0]):
                 evaluator.update(pred[b].cpu().numpy(), lbl[b].cpu().numpy())
                 
     oa, miou, _ = evaluator.compute()
@@ -124,6 +121,7 @@ def validate_block_proxy(model, cfg, val_loader):
 
 def run_training(cfg, save_path):
     logger = logging.getLogger("geoprop")
+    logger.info(">>> [Phase 1] Training V3.0 (Compatible)...")
     
     train_ds = S3DISDataset(cfg, split='train')
     val_ds = S3DISDataset(cfg, split='val')
@@ -142,6 +140,7 @@ def run_training(cfg, save_path):
     input_mode = cfg['model']['input_mode']
     fixed_train = cfg['train']['seed_mode']['train']
     use_dyn_w = cfg['train']['use_dynamic_weights']
+    label_ratio = train_ds.label_ratio
 
     all_files = []
     if val_mode == 'full_scene':
@@ -153,42 +152,21 @@ def run_training(cfg, save_path):
         pbar = tqdm(train_loader, desc=f"Epoch {ep+1}", leave=False)
         
         for i, (xyz, sft, rgb, lbl, seed_mask) in enumerate(pbar):
-            # xyz is CENTERED. rgb is normalized.
             xyz, sft, rgb, lbl = xyz.cuda().transpose(1,2), sft.cuda().transpose(1,2), rgb.cuda().transpose(1,2), lbl.cuda()
             seed_mask = seed_mask.cuda()
             
             feat = prepare_features(xyz, rgb, input_mode)
+            seed_idx = get_seeds(xyz, seed_mask, fixed_train, label_ratio)
             
-            # Seeds
-            if fixed_train:
-                # [V3.0] Mask based
-                M = max(int(xyz.shape[2] * cfg['dataset']['label_ratio']), 1)
-                idx_list = []
-                for b in range(xyz.shape[0]):
-                    idxs = torch.where(seed_mask[b])[0]
-                    if len(idxs)==0: idxs = torch.tensor([0], device=xyz.device)
-                    if len(idxs)>=M: idxs = idxs[:M]
-                    else: idxs = torch.cat([idxs, idxs[0].repeat(M-len(idxs))])
-                    idx_list.append(idxs)
-                seed_idx = torch.stack(idx_list)
-            else:
-                # [V2.0] Random Permutation per batch
-                M = max(int(xyz.shape[2] * cfg['dataset']['label_ratio']), 1)
-                seed_indices_list = [torch.randperm(xyz.shape[2], device=xyz.device)[:M] for _ in range(xyz.shape[0])]
-                seed_idx = torch.stack(seed_indices_list)
-            
-            # Gather
             xyz_seeds = gather_points(xyz, seed_idx)
             rgb_seeds = gather_points(rgb, seed_idx)
-            # V2.0 val_seeds_abs is simple cat
             val_seeds_abs = torch.cat([xyz_seeds, rgb_seeds], dim=1)
-            
             feat_seeds = gather_points(feat, seed_idx)
             
             loss_weights_per_point = 1.0
             if use_dyn_w:
                 lbl_seeds = torch.gather(lbl, 1, seed_idx)
-                class_weights = compute_class_weights(lbl_seeds, cfg['dataset'].get('num_classes', 13))
+                class_weights = compute_class_weights(lbl_seeds, 13)
                 loss_weights_per_point = class_weights[lbl].unsqueeze(1)
             
             opt.zero_grad()
