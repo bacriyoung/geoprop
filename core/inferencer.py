@@ -164,7 +164,25 @@ def run_inference(cfg, model):
         "Graph Refine": "graph_refine",
         "Spatial Smooth": "spatial_smooth"
     }
-    
+
+    logger.info("-" * 80)
+    logger.info("Inference Pipeline Configuration Summary:")
+    for stage in eval_stages:
+        key = stage_key_map.get(stage)
+        status_info = "Enabled"
+        save_info = ""
+        
+        # 检查是否开启了 NPY 保存
+        if key:
+            stage_cfg = cfg['inference'].get(key, {})
+            if cfg['inference']['save_npy'] and stage_cfg.get('save_output', False):
+                save_info = "| [NPY SAVED]"
+            else:
+                save_info = "| [No Save]"
+        
+        logger.info(f"  > {stage:<20} : {status_info} {save_info}")
+    logger.info("-" * 80)
+
     evals = {stage: IoUCalculator(num_classes) for stage in eval_stages}
     
     if cfg['inference']['save_npy'] and ablation_mode:

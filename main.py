@@ -168,40 +168,47 @@ def main():
     # 4. Log Detailed Configuration
     log_key_config(cfg, logger)
     
-    trained_model = None
     
     # Phase 1: Training
     if cfg['train']['enable']:
         save_path = os.path.join(out_dirs['root'], "best_model.pth")
-        trained_model = run_training(cfg, save_path)
+        run_training(cfg, save_path)
     
     # Phase 2: Inference
     if cfg['inference']['enable']:
-        if trained_model is None:
-            # Logic to find checkpoint
-            cfg_ckpt = cfg['inference'].get('checkpoint_path')
-            local_ckpt = os.path.join(out_dirs['root'], "best_model.pth")
+        ckpt_path = None
+        
+        if cfg['train']['enable']:
+            ckpt_path = os.path.join(out_dirs['root'], "best_model.pth")
+            logger.info(f"Training finished. Automatically selecting BEST checkpoint: {ckpt_path}")
+        else:
+            ckpt_path = cfg['inference'].get('checkpoint_path')
+            local_best = os.path.join(out_dirs['root'], "best_model.pth")
             
-            ckpt_path = None
-            if cfg_ckpt and os.path.exists(cfg_ckpt):
-                ckpt_path = cfg_ckpt
-            elif os.path.exists(local_ckpt):
-                ckpt_path = local_ckpt
-                
-            if not ckpt_path:
-                logger.error("No checkpoint found for inference.")
-                return
+            if not ckpt_path and os.path.exists(local_best):
+                ckpt_path = local_best
+                logger.info(f"Config checkpoint not specified. Auto-fallback to local: {ckpt_path}")
+
+        if not ckpt_path or not os.path.exists(ckpt_path):
+            logger.error(f"Critical Error: Checkpoint not found at {ckpt_path}")
+            return
+
+        logger.info(f"Loading weights for inference from: {ckpt_path}")
+        
+        model_args = {
+            'qk_dim': cfg['model']['qk_dim'],
+            'k_neighbors': cfg['model']['k_neighbors'],
+            'input_mode': cfg['model']['input_mode']
+        }
+        model = DecoupledPointJAFAR(**model_args).cuda()
+        
+        try:
+            model.load_state_dict(torch.load(ckpt_path))
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint: {e}")
+            return
             
-            logger.info(f"Loading weights from: {ckpt_path}")
-            model_args = {
-                'qk_dim': cfg['model']['qk_dim'],
-                'k_neighbors': cfg['model']['k_neighbors'],
-                'input_mode': cfg['model']['input_mode']
-            }
-            trained_model = DecoupledPointJAFAR(**model_args).cuda()
-            trained_model.load_state_dict(torch.load(ckpt_path))
-            
-        run_inference(cfg, trained_model)
+        run_inference(cfg, model)
 
 if __name__ == "__main__":
     main()

@@ -43,7 +43,7 @@ model:
   qk_dim: 128
   k_neighbors: 32
   # [V3.0 Feature]
-  input_mode: "gblobs" #absolute or gblobs
+  input_mode: "absolute" #absolute or gblobs
 
 inference:
   enable: true

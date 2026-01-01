@@ -226,5 +226,6 @@ def run_training(cfg, save_path):
                 logger.info(f"  --> Best Model Saved")
         else:
             logger.info(f"Epoch {ep+1:02d} | Loss: {epoch_loss:.4f}")
-            
+        last_save_path = save_path.replace("best_model.pth", "last_model.pth")
+        torch.save(model.state_dict(), last_save_path)            
     return model
