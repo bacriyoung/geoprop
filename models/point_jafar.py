@@ -2,41 +2,48 @@ import torch
 import torch.nn as nn
 
 class DecoupledPointJAFAR(nn.Module):
-    def __init__(self, qk_dim=64, k=16, input_mode="absolute"): 
+    def __init__(self, qk_dim=64, k=16, input_mode='gblobs'): 
         super().__init__()
         self.qk_dim = qk_dim
         self.k = k
         self.input_mode = input_mode
         
-        # Determine input dimension
-        # absolute: XYZ(3) + RGB(3) = 6
-        # gblobs:   Geo(9) + Color(9) = 18
-        if input_mode == "absolute":
-            self.input_geo_dim = 6
-        elif input_mode == "gblobs":
-            self.input_geo_dim = 18
+        # [V3.0 Logic] Determine input dimension
+        if input_mode == 'absolute':
+            self.input_geo_dim = 6  # XYZ + RGB
+        elif input_mode == 'gblobs':
+            self.input_geo_dim = 18 # GeoCov(9) + ColCov(9)
         else:
             raise ValueError(f"Unknown input_mode: {input_mode}")
 
         self.geom_encoder = nn.Sequential(
             nn.Conv1d(self.input_geo_dim, qk_dim, 1),
-            nn.BatchNorm1d(qk_dim), nn.ReLU(),
+            nn.BatchNorm1d(qk_dim),
+            nn.ReLU(),
             nn.Conv1d(qk_dim, qk_dim, 1),
-            nn.BatchNorm1d(qk_dim), nn.ReLU()
+            nn.BatchNorm1d(qk_dim),
+            nn.ReLU()
         )
         
-        self.scale_conv = nn.Conv1d(6, qk_dim, 1) # Target is always 6 (XYZ+RGB)
+        # Reconstruction target is always 6 (XYZ+RGB)
+        self.scale_conv = nn.Conv1d(6, qk_dim, 1)
         self.shift_conv = nn.Conv1d(6, qk_dim, 1)
         
         self.sem_query = nn.Conv1d(qk_dim, qk_dim, 1)
         self.sem_key = nn.Conv1d(qk_dim, qk_dim, 1)
         
         self.bdy_head = nn.Sequential(
-            nn.Conv1d(qk_dim, 32, 1), nn.BatchNorm1d(32), nn.ReLU(),
-            nn.Conv1d(32, 1, 1), nn.Sigmoid()
+            nn.Conv1d(qk_dim, 32, 1),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.Conv1d(32, 1, 1),
+            nn.Sigmoid()
         )
+        
         self.rel_pos_mlp = nn.Sequential(
-            nn.Conv2d(3, qk_dim, 1), nn.BatchNorm2d(qk_dim), nn.ReLU(),
+            nn.Conv2d(3, qk_dim, 1),
+            nn.BatchNorm2d(qk_dim),
+            nn.ReLU(),
             nn.Conv2d(qk_dim, qk_dim, 1)
         )
         self.softmax = nn.Softmax(dim=-1)
@@ -62,6 +69,7 @@ class DecoupledPointJAFAR(nn.Module):
             geom_lr = geom_lr * (scale + 1) + shift
 
         bdy_prob = self.bdy_head(geom_hr)
+        
         Q = self.sem_query(geom_hr)
         K = self.sem_key(geom_lr) 
         
@@ -74,6 +82,7 @@ class DecoupledPointJAFAR(nn.Module):
         
         rel_pos = xyz_hr.unsqueeze(-1) - xyz_lr_g
         pos_enc = self.rel_pos_mlp(rel_pos)
+        
         attn = self.softmax(torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5))
         val_g = self._gather_val_efficient(val_lr, k_idx)
         

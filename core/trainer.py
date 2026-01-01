@@ -66,16 +66,12 @@ def get_seeds(xyz, seed_mask, mode_fixed, label_ratio=0.001):
                 pad = idx[0].repeat(M - len(idx))
                 idx = torch.cat([idx, pad])
             seed_indices_list.append(idx)
-        return torch.stack(seed_indices_list) # [B, M]
+        return torch.stack(seed_indices_list)
     else:
         seed_indices_list = [torch.randperm(N, device=xyz.device)[:M] for _ in range(B)]
-        return torch.stack(seed_indices_list) # [B, M]
+        return torch.stack(seed_indices_list)
 
-# Helper to gather along dim 2
 def gather_points(tensor, indices):
-    # tensor: [B, C, N]
-    # indices: [B, M]
-    # returns: [B, C, M]
     C = tensor.shape[1]
     return torch.gather(tensor, 2, indices.unsqueeze(1).expand(-1, C, -1))
 
@@ -98,17 +94,14 @@ def validate_block_proxy(model, cfg, val_loader):
             feat = prepare_features(xyz, rgb, input_mode)
             seed_idx = get_seeds(xyz, seed_mask, fixed_val, cfg['dataset']['label_ratio'])
             
-            # [FIXED] Correct unpacking: seed_idx is [B, M]
+            # [FIX] Correct unpacking [B, M]
             B, M = seed_idx.shape
             
-            # [FIXED] Use helper gather for safety
-            # xyz_lr corresponds to coordinates of seeds
+            # [FIX] Robust Gather
             xyz_source = feat[:, :3, :] if input_mode == "absolute" else xyz
             xyz_lr = gather_points(xyz_source, seed_idx)
-            
             feat_lr = gather_points(feat, seed_idx)
             
-            # Labels: [B, M]
             lbl_lr = torch.gather(lbl, 1, seed_idx)
             val_lr = torch.zeros(B, num_classes, M).cuda().scatter_(1, lbl_lr.unsqueeze(1), 1.0)
             
@@ -157,21 +150,19 @@ def run_training(cfg, save_path):
             feat = prepare_features(xyz, rgb, input_mode)
             seed_idx = get_seeds(xyz, seed_mask, fixed_train, cfg['dataset']['label_ratio'])
             
-            # [FIXED] Correct Unpacking
+            # [FIX] Correct unpacking
             B, M = seed_idx.shape
             
-            # [FIXED] Robust Gather
+            # [FIX] Robust Gather
             xyz_seeds = gather_points(xyz, seed_idx)
             rgb_seeds = gather_points(rgb, seed_idx)
             val_seeds_abs = torch.cat([xyz_seeds, rgb_seeds], dim=1)
-            
             feat_seeds = gather_points(feat, seed_idx)
             
             loss_weights_per_point = 1.0
             if use_dyn_w:
                 lbl_seeds = torch.gather(lbl, 1, seed_idx)
                 class_weights = compute_class_weights(lbl_seeds, cfg['dataset'].get('num_classes', 13))
-                # Apply weights to target points based on THEIR label
                 loss_weights_per_point = class_weights[lbl].unsqueeze(1)
             
             opt.zero_grad()

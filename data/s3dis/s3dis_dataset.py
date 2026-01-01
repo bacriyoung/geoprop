@@ -20,11 +20,17 @@ class S3DISDataset(Dataset):
         with open(config_path, 'r') as f:
             self.ds_cfg = yaml.safe_load(f)
             
-        # 2. Parse Config
-        ds_info = self.ds_cfg.get('dataset', {})
+        # 2. Parse Config (Strictly matching your YAML structure)
+        # Structure: dataset -> root_dir
+        if 'dataset' not in self.ds_cfg:
+             raise KeyError("Your s3dis.yaml must have a top-level 'dataset' key.")
+             
+        ds_info = self.ds_cfg['dataset']
+        
+        # [FIX] Use 'root_dir' as in your yaml, NOT 'dataset_path'
         self.root = ds_info.get('root_dir')
         if not self.root:
-            raise ValueError("'dataset.root_dir' is missing in config/s3dis/s3dis.yaml")
+            raise ValueError("'root_dir' is missing under 'dataset' in config/s3dis/s3dis.yaml")
 
         self.label_ratio = cfg['dataset'].get('label_ratio', ds_info.get('label_ratio', 0.001))
 
@@ -35,16 +41,17 @@ class S3DISDataset(Dataset):
             raise RuntimeError(f"[{split.upper()}] No files found in {self.root}. Check 'root_dir' and 'split' in s3dis.yaml!")
 
         self.data_list = []
-        logger = logging.getLogger("geoprop")
-        logger.info(f"[{split.upper()}] Loading {len(self.files)} rooms from {self.root}...")
+        # Use simple print or logger
+        print(f"[{split.upper()}] Loading {len(self.files)} rooms from {self.root}...")
         
-        for f in tqdm(self.files, desc=f"Loading {split}"):
+        for f in tqdm(self.files):
             self.data_list.append(np.load(f))
 
     def _get_files(self, ds_info):
         search_pattern = os.path.join(self.root, "**", "*.npy")
         all_files = sorted(glob.glob(search_pattern, recursive=True))
         
+        # [FIX] Access 'split' under 'dataset'
         split_cfg = ds_info.get('split', {})
         
         if self.split == 'train':
@@ -77,7 +84,6 @@ class S3DISDataset(Dataset):
         colors = data[:, 3:6]
         labels = data[:, 6]
         
-        # Block Cropping
         while True:
             center = points[np.random.choice(N)]
             block_min = center - 1.0; block_max = center + 1.0
@@ -92,15 +98,14 @@ class S3DISDataset(Dataset):
         lbl = labels[mask]
         xyz_norm = xyz - xyz.min(0)
         
-        # --- V3.0 Universal Seed (Coordinate Hash) ---
-        # [FIX] Cast to int64 BEFORE XOR operation
+        # --- Seed Generation (Hash) ---
+        # [FIX] Cast to int64 BEFORE XOR to avoid TypeError
         h1 = np.abs(xyz[:, 0] * 73856093).astype(np.int64)
         h2 = np.abs(xyz[:, 1] * 19349663).astype(np.int64)
         h3 = np.abs(xyz[:, 2] * 83492791).astype(np.int64)
         seed_hash = h1 ^ h2 ^ h3
         
         threshold = int(self.label_ratio * 100000)
-        # Modulo on the integer hash
         is_seed = (seed_hash % 100000) < threshold
         seed_mask = torch.from_numpy(is_seed.astype(bool))
         

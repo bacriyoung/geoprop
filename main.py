@@ -1,7 +1,7 @@
 import sys
 import os
 
-# [CRITICAL FIX] Add parent directory to path to fix ModuleNotFoundError
+# [V3.0 Fix] Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -14,21 +14,20 @@ from geoprop.core.inferencer import run_inference
 from geoprop.models.point_jafar import DecoupledPointJAFAR
 
 def print_config_summary(logger, cfg):
-    """Prints a summary of the configuration."""
+    """Prints a beautiful summary of the configuration."""
     logger.info("="*80)
     logger.info("GEOPROP PIPELINE CONFIGURATION SUMMARY (V3.0 Stable)")
     logger.info("="*80)
     
-    # Project & Data
-    # [FIX] Correctly access nested keys
+    # Project
     logger.info(f"Project Name    : {cfg['project']['name']}")
     logger.info(f"Target Dataset  : {cfg['project']['target_dataset']}")
     logger.info("-" * 80)
     
-    # V3.1 Switches
+    # V3.0 Switches
     tr = cfg['train']
     md = cfg['model']
-    logger.info(f"STRATEGY SETTINGS")
+    logger.info(f"STRATEGY SETTINGS (V3.0)")
     logger.info(f"  > Input Mode    : {md.get('input_mode', 'UNKNOWN').upper()}")
     logger.info(f"  > Dynamic Weight: {tr.get('use_dynamic_weights')}")
     logger.info(f"  > Seed Mode     : Train={'FIXED' if tr['seed_mode']['train'] else 'RANDOM'} | Val={'FIXED' if tr['seed_mode']['val'] else 'RANDOM'}")
@@ -64,7 +63,7 @@ def main():
     from datetime import datetime
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # [CRITICAL FIX] Correctly access 'target_dataset' under 'project'
+    # [V3.0 Fix] Correct key access
     dataset_name = cfg['project'].get('target_dataset', 's3dis')
     output_dir = os.path.join(args.output_root, dataset_name, timestamp)
     
