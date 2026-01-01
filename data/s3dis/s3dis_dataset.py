@@ -4,7 +4,6 @@ import numpy as np
 import os
 import glob
 import yaml
-# [RESTORED] No tqdm here to match V2.0 logs
 import logging
 
 class S3DISDataset(Dataset):
@@ -12,7 +11,7 @@ class S3DISDataset(Dataset):
         self.cfg = cfg
         self.split = split
         
-        # 1. Load config
+        # 1. Load config strict V2.0 way
         config_path = os.path.join('config', 's3dis', 's3dis.yaml')
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Config not found: {config_path}")
@@ -20,11 +19,12 @@ class S3DISDataset(Dataset):
         with open(config_path, 'r') as f:
             self.ds_cfg = yaml.safe_load(f)
             
-        ds_info = self.ds_cfg.get('dataset', {})
-        self.root = ds_info.get('root_dir')
-        if not self.root:
-            raise ValueError("'dataset.root_dir' missing in s3dis.yaml")
-
+        ds_info = self.ds_cfg['dataset']
+        self.root = ds_info['root_dir']
+        
+        # [RESTORED] V2.0 Parameters
+        self.num_points = ds_info.get('num_points', 24000)
+        self.block_size = ds_info.get('block_size', 2.0)
         self.label_ratio = cfg['dataset'].get('label_ratio', ds_info.get('label_ratio', 0.001))
 
         # 2. Load Files
@@ -33,7 +33,7 @@ class S3DISDataset(Dataset):
         if len(self.files) == 0:
             raise RuntimeError(f"[{split.upper()}] No files found in {self.root}!")
 
-        # [RESTORED] V2.0 Logging Style
+        # [RESTORED] Log format
         print(f"[{split.upper()}] S3DIS Dataset: Loaded {len(self.files)} rooms from Areas {target_areas}")
 
         self.data_list = []
@@ -44,65 +44,84 @@ class S3DISDataset(Dataset):
         search_pattern = os.path.join(self.root, "**", "*.npy")
         all_files = sorted(glob.glob(search_pattern, recursive=True))
         
-        split_cfg = ds_info.get('split', {})
-        
-        if self.split == 'train':
-            target_areas = split_cfg.get('train_areas', [1, 2, 3, 4, 6])
-        elif self.split == 'val':
-            target_areas = split_cfg.get('val_areas', [5])
-        else:
-            target_areas = split_cfg.get('inference_areas', [5])
+        split_cfg = ds_info['split']
+        if self.split == 'train': areas = split_cfg['train_areas']
+        elif self.split == 'val': areas = split_cfg['val_areas']
+        else: areas = split_cfg['inference_areas']
             
         filtered = []
         for f in all_files:
-            base = os.path.basename(f)
-            for a in target_areas:
-                if f"Area_{a}_" in base:
+            for a in areas:
+                if f"Area_{a}_" in os.path.basename(f):
                     filtered.append(f)
                     break
-        return filtered, target_areas
+        return filtered, areas
 
     def __len__(self):
-        if self.split == 'train': return 4000 
-        return len(self.files) * 20 
+        # [RESTORED] V2.0 Logic: 5x for training
+        return len(self.files) * (5 if self.split == 'train' else 1)
 
     def __getitem__(self, idx):
+        # [RESTORED] V2.0 Determinism for val
+        if self.split != 'train':
+            np.random.seed(idx)
+            
         room_idx = idx % len(self.data_list)
         data = self.data_list[room_idx]
         
-        N = data.shape[0]
-        points = data[:, :3]
-        colors = data[:, 3:6]
-        labels = data[:, 6]
+        # [RESTORED] V2.0 Sampling Logic (Center Crop)
+        center_idx = np.random.choice(len(data))
+        center = data[center_idx, :3]
         
-        # Block Cropping
-        while True:
-            center = points[np.random.choice(N)]
-            block_min = center - 1.0; block_max = center + 1.0
-            mask = np.where((points[:,0] >= block_min[0]) & (points[:,0] < block_max[0]) &
-                            (points[:,1] >= block_min[1]) & (points[:,1] < block_max[1]))[0]
-            if len(mask) > 1024:
-                if len(mask) > 4096: mask = np.random.choice(mask, 4096, replace=False)
-                break
+        mask = np.all((data[:, :3] >= center - self.block_size/2) & 
+                      (data[:, :3] <= center + self.block_size/2), axis=1)
+        block_data = data[mask]
         
-        xyz = points[mask]
-        rgb = colors[mask]
-        lbl = labels[mask]
-        xyz_norm = xyz - xyz.min(0)
+        # [RESTORED] Resampling to num_points (24000)
+        if len(block_data) < self.num_points: 
+            choice = np.random.choice(len(block_data), self.num_points, replace=True)
+        else: 
+            choice = np.random.choice(len(block_data), self.num_points, replace=False)
+            
+        sample = block_data[choice]
+        xyz = sample[:, :3].astype(np.float32)
+        rgb = sample[:, 3:6].astype(np.float32)
+        lbl = sample[:, 6].astype(int)
         
-        # [V3.0 Logic] Coordinate Hash (Always computed, used only if config enabled)
+        if rgb.max() > 1.1: rgb /= 255.0
+
+        # [RESTORED] Augmentation
+        if self.split == 'train' and self.cfg['train']['augmentation']['enabled']:
+            # Reset seed for randomness in train
+            np.random.seed() 
+            sigma = self.cfg['train']['augmentation']['jitter_sigma']
+            clip = self.cfg['train']['augmentation']['jitter_clip']
+            xyz += np.clip(sigma * np.random.randn(*xyz.shape), -clip, clip)
+        
+        xyz_t = torch.from_numpy(xyz).float()
+        rgb_t = torch.from_numpy(rgb).float()
+        lbl_t = torch.from_numpy(lbl).long()
+        
+        # [RESTORED] Normalization & Centering
+        xyz_min = xyz_t.min(0)[0]
+        xyz_max = xyz_t.max(0)[0]
+        xyz_norm = (xyz_t - xyz_min) / (xyz_max - xyz_min + 1e-6)
+        
+        sft_feat = torch.cat([rgb_t, xyz_norm], dim=1) # [N, 6]
+        xyz_centered = xyz_t - xyz_t.mean(0) # [N, 3] Center at 0
+        
+        # --- V3.0 Addition: Seed Hash (Append only) ---
+        # Using ORIGINAL xyz (before aug/center) for consistency? 
+        # Ideally yes, but sample is already cropped. 
+        # Using sampled xyz is fine as long as we use the values.
+        # Use int64 cast for safety.
         h1 = np.abs(xyz[:, 0] * 73856093).astype(np.int64)
         h2 = np.abs(xyz[:, 1] * 19349663).astype(np.int64)
         h3 = np.abs(xyz[:, 2] * 83492791).astype(np.int64)
         seed_hash = h1 ^ h2 ^ h3
-        
         threshold = int(self.label_ratio * 100000)
         is_seed = (seed_hash % 100000) < threshold
         seed_mask = torch.from_numpy(is_seed.astype(bool))
         
-        xyz_t = torch.from_numpy(xyz_norm).float()
-        sft_t = torch.from_numpy(xyz).float() 
-        rgb_t = torch.from_numpy(rgb / 255.0).float()
-        lbl_t = torch.from_numpy(lbl).long()
-        
-        return xyz_t, sft_t, rgb_t, lbl_t, seed_mask
+        # Return V2.0 tuple + seed_mask
+        return xyz_centered, sft_feat, rgb_t, lbl_t, seed_mask

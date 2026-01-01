@@ -15,14 +15,11 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  # [V3.0 Features - Default OFF to match V2.0]
-  # Set these to TRUE only when you want V3.0 behavior
-  use_dynamic_weights: false
-  
-  # seed_mode: false = Random (V2.0 standard), true = Fixed (V3.0 Overfit)
+  # Default V2.0 Behavior
+  use_dynamic_weights: true
   seed_mode:
-    train: false 
-    val: false
+    train: true 
+    val: true
   
   val_interval: 1
   val_mode: "block_proxy" 
@@ -40,14 +37,11 @@ dataset:
   name: "s3dis"
   num_workers: 4
   label_ratio: 0.001
-  # Paths managed in s3dis.yaml
 
 model:
   qk_dim: 128
   k_neighbors: 32
-  
-  # [V3.0 Feature] "absolute" or "gblobs" (Default: gblobs for V2.0 match)
-  input_mode: "gblobs" 
+  input_mode: "absolute" # Default "absolute" or "gblobs"
 
 inference:
   enable: true
