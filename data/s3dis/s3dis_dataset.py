@@ -1,90 +1,72 @@
+import torch
+from torch.utils.data import Dataset
+import numpy as np
 import os
 import glob
-import numpy as np
-import torch
-import logging
+from tqdm import tqdm
 
-from geoprop.data.base_dataset import BaseDataset
-
-class S3DISDataset(BaseDataset):
-    """
-    S3DIS
-    """
+class S3DISDataset(Dataset):
     def __init__(self, cfg, split='train'):
-        super().__init__(cfg, split)
-        
-        root_dir = cfg['dataset']['root_dir']
-        
-        all_files = sorted(glob.glob(os.path.join(root_dir, '*.npy')))
-        if len(all_files) == 0: 
-            raise ValueError(f"No files found in {root_dir}")
-        
-        target_areas = []
-        if split == 'train':
-            target_areas = cfg['dataset']['split']['train_areas']
-        elif split == 'val':
-            target_areas = cfg['dataset']['split']['val_areas']
-        elif split == 'inference':
-            target_areas = cfg['dataset']['split']['inference_areas']
-        else:
-            raise ValueError(f"Unknown split: {split}")
-            
-        self.files = []
-        for f in all_files:
-            for area_idx in target_areas:
-                if f"Area_{area_idx}" in os.path.basename(f):
-                    self.files.append(f)
-                    break
-        
-        self.logger.info(f"[{split.upper()}] S3DIS Dataset: Loaded {len(self.files)} rooms from Areas {target_areas}")
+        self.cfg = cfg
+        self.split = split
+        self.root = "data/s3dis/stanford_indoor3d"  
+        self.label_ratio = cfg['dataset'].get('label_ratio', 0.001)
+        self.files = self._get_files()
+        self.data_list = []
+        print(f"[{split.upper()}] Loading {len(self.files)} rooms...")
+        for f in tqdm(self.files):
+            self.data_list.append(np.load(f))
+
+    def _get_files(self):
+        all_files = sorted(glob.glob(os.path.join(self.root, "*.npy")))
+        if self.split == 'train': return [f for f in all_files if 'Area_5' not in f]
+        elif self.split == 'val': return [f for f in all_files if 'Area_5' in f]
+        else: return [f for f in all_files if 'Area_5' in f]
 
     def __len__(self):
-        return len(self.files) * (5 if self.split == 'train' else 1)
+        if self.split == 'train': return 4000 
+        return len(self.files) * 20 
 
     def __getitem__(self, idx):
-        if self.split != 'train':
-            np.random.seed(idx)
-            
-        file_path = self.files[idx % len(self.files)]
-        data = np.load(file_path)
+        room_idx = idx % len(self.data_list)
+        data = self.data_list[room_idx]
+        N = data.shape[0]
+        points = data[:, :3]
+        colors = data[:, 3:6]
+        labels = data[:, 6]
         
-        center_idx = np.random.choice(len(data))
-        center = data[center_idx, :3]
+        # Block Cropping
+        while True:
+            center = points[np.random.choice(N)]
+            block_min = center - 1.0; block_max = center + 1.0
+            mask = np.where((points[:,0] >= block_min[0]) & (points[:,0] < block_max[0]) &
+                            (points[:,1] >= block_min[1]) & (points[:,1] < block_max[1]))[0]
+            if len(mask) > 1024:
+                if len(mask) > 4096: mask = np.random.choice(mask, 4096, replace=False)
+                break
         
-        mask = np.all((data[:, :3] >= center - self.block_size/2) & 
-                      (data[:, :3] <= center + self.block_size/2), axis=1)
-        block_data = data[mask]
+        xyz = points[mask]
+        rgb = colors[mask]
+        lbl = labels[mask]
+        xyz_norm = xyz - xyz.min(0)
         
-        if len(block_data) < self.num_points: 
-            choice = np.random.choice(len(block_data), self.num_points, replace=True)
-        else: 
-            choice = np.random.choice(len(block_data), self.num_points, replace=False)
-            
-        sample = block_data[choice]
-        xyz = sample[:, :3].astype(np.float32)
-        rgb = sample[:, 3:6].astype(np.float32)
-        lbl = sample[:, 6].astype(int)
+        # --- Universal Coordinate Hashing for Seeds ---
+        # This ensures CONSISTENCY across Train/Val/Inference
+        # Hash = abs(x*P1 ^ y*P2 ^ z*P3)
+        seed_hash = (np.abs(xyz[:, 0] * 73856093) ^ 
+                     np.abs(xyz[:, 1] * 19349663) ^ 
+                     np.abs(xyz[:, 2] * 83492791)).astype(np.int64)
         
-        if rgb.max() > 1.1: rgb /= 255.0
-
-        if self.split == 'train' and self.aug_cfg and self.aug_cfg.get('enabled', False):
-            np.random.seed() 
-            sigma = self.aug_cfg.get('jitter_sigma', 0.001)
-            clip = self.aug_cfg.get('jitter_clip', 0.005)
-            xyz += np.clip(sigma * np.random.randn(*xyz.shape), -clip, clip)
-            
-            if np.random.random() > 0.5: 
-                rgb = np.clip(0.5 + np.random.uniform(0.9, 1.1) * (rgb - 0.5) + np.random.uniform(-0.05, 0.05), 0, 1)
+        # Threshold check
+        threshold = int(self.label_ratio * 100000)
+        is_seed = (seed_hash % 100000) < threshold
         
-        xyz_t = torch.from_numpy(xyz).float()
-        rgb_t = torch.from_numpy(rgb).float()
+        seed_mask = torch.from_numpy(is_seed.astype(bool))
+        
+        # Prepare Tensors
+        xyz_t = torch.from_numpy(xyz_norm).float()
+        sft_t = torch.from_numpy(xyz).float() 
+        rgb_t = torch.from_numpy(rgb / 255.0).float()
         lbl_t = torch.from_numpy(lbl).long()
         
-        xyz_min = xyz_t.min(0)[0]
-        xyz_max = xyz_t.max(0)[0]
-        xyz_norm = (xyz_t - xyz_min) / (xyz_max - xyz_min + 1e-6)
-        
-        sft_feat = torch.cat([rgb_t, xyz_norm], dim=1)
-        xyz_centered = xyz_t - xyz_t.mean(0)
-        
-        return xyz_centered, sft_feat, rgb_t, lbl_t
+        return xyz_t, sft_t, rgb_t, lbl_t, seed_mask

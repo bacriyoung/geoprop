@@ -11,6 +11,7 @@ from geoprop.data.s3dis.s3dis_dataset import S3DISDataset
 from geoprop.models.point_jafar import DecoupledPointJAFAR
 from geoprop.utils.metrics import IoUCalculator
 from geoprop.core.inferencer import validate_full_scene_logic 
+from geoprop.core.modules.gblobs import compute_dual_gblobs
 
 def compute_gradient_boundary(xyz, rgb, k=16):
     B, C, N = xyz.shape
@@ -33,60 +34,96 @@ def compute_gradient_boundary(xyz, rgb, k=16):
     return (torch.cat(bdy_list, dim=1) > 0.15).float()
 
 def compute_class_weights(labels, num_classes=13):
-    """
-    Compute dynamic weights based on inverse class frequency in the SEEDS.
-    If a class is rare in seeds, its reconstruction loss weight goes UP.
-    """
-    # labels: [B, M] (Sparse seed labels)
     weights = torch.ones(num_classes, device=labels.device)
-    
-    # Flatten and count
     flat_lbl = labels.view(-1)
     counts = torch.bincount(flat_lbl, minlength=num_classes).float()
-    
-    # Avoid division by zero. If count is 0, weight is 0 (ignore class? or 1?)
-    # Usually we want high weight for rare.
-    # Logic: Weight = Total / (Count + epsilon)
     total = counts.sum()
     valid_mask = counts > 0
-    
     if valid_mask.sum() > 0:
         weights[valid_mask] = total / (counts[valid_mask] * valid_mask.sum())
-        # Clip extreme weights to avoid explosion
         weights = torch.clamp(weights, 0.1, 10.0)
-    
     return weights
+
+def prepare_features(xyz, rgb, input_mode):
+    if input_mode == "absolute":
+        return torch.cat([xyz, rgb], dim=1) # [B, 6, N]
+    elif input_mode == "gblobs":
+        geo, col = compute_dual_gblobs(xyz, rgb, k=32)
+        return torch.cat([geo, col], dim=1) # [B, 18, N]
+    else:
+        raise ValueError("Unknown input_mode")
+
+def get_seeds(xyz, seed_mask, mode_fixed, label_ratio=0.001):
+    """ Returns selected seed indices based on config mode """
+    B, _, N = xyz.shape
+    M = max(int(N * label_ratio), 1)
+    
+    if mode_fixed:
+        # Use the mask from dataset (Coordinate Hash)
+        # Handle batching: we need equal M seeds for tensor packing if possible,
+        # or we just select first M found in mask.
+        seed_indices_list = []
+        for b in range(B):
+            idx = torch.where(seed_mask[b])[0]
+            if len(idx) == 0: 
+                # Fallback if block has no seeds (rare but possible)
+                idx = torch.tensor([0], device=xyz.device) 
+            
+            # If we need exact M seeds? Not strictly, but for batching usually yes.
+            # Strategy: Crop or Pad to M
+            if len(idx) >= M:
+                idx = idx[:M]
+            else:
+                pad = idx[0].repeat(M - len(idx))
+                idx = torch.cat([idx, pad])
+            seed_indices_list.append(idx)
+        return torch.stack(seed_indices_list)
+    else:
+        # Random selection (Standard V2.0)
+        perm = torch.randperm(N, device=xyz.device)
+        return perm[:M].unsqueeze(0).expand(B, -1) # Simple expansion or per-batch rand?
+        # Better: Per batch random
+        # ...simplified for brevity:
+        seed_indices_list = [torch.randperm(N, device=xyz.device)[:M] for _ in range(B)]
+        return torch.stack(seed_indices_list)
 
 def validate_block_proxy(model, cfg, val_loader):
     model.eval()
     num_classes = cfg['dataset'].get('num_classes', 13)
     evaluator = IoUCalculator(num_classes)
     limit = cfg['train'].get('val_sample_batches', 100)
+    input_mode = cfg['model']['input_mode']
+    fixed_val = cfg['train']['seed_mode']['val']
     
     with torch.no_grad():
-        for i, (xyz, sft, rgb, lbl) in enumerate(val_loader):
+        for i, (xyz, sft, rgb, lbl, seed_mask) in enumerate(val_loader):
             if i >= limit: break
             xyz = xyz.cuda().transpose(1, 2)
             rgb = rgb.cuda().transpose(1, 2)
             lbl = lbl.cuda()
+            seed_mask = seed_mask.cuda()
             
-            # [V3.0 Input] Absolute XYZ + RGB
-            feat = torch.cat([xyz, rgb], dim=1) # [B, 6, N]
+            feat = prepare_features(xyz, rgb, input_mode)
+            seed_idx = get_seeds(xyz, seed_mask, fixed_val, cfg['dataset']['label_ratio'])
             
-            # Fixed seed for validation
-            g_cpu = torch.Generator(); g_cpu.manual_seed(i)
-            M = max(int(xyz.shape[2] * cfg['dataset']['label_ratio']), 1)
-            perm = torch.randperm(xyz.shape[2], generator=g_cpu)[:M].to(xyz.device)
+            # Gather
+            B, _, M = seed_idx.shape # [B, M]
+            # Use advanced indexing
+            batch_idx = torch.arange(B, device=xyz.device).view(B, 1).expand(-1, M)
             
-            feat_lr = feat[:, :, perm]
+            xyz_lr = feat[:, :3, :] if input_mode == "absolute" else xyz
+            xyz_lr = xyz_lr[batch_idx, :, seed_idx].transpose(1, 2) # [B, 3, M]
             
-            # Validation Value: Labels
-            val_lr = torch.zeros(xyz.shape[0], num_classes, M).cuda().scatter_(1, lbl[:,perm].unsqueeze(1), 1.0)
+            feat_lr = feat[batch_idx, :, seed_idx].transpose(1, 2)
             
-            probs, _ = model(xyz, xyz[:,:,perm], val_lr, feat, feat_lr)
+            # Value (One-hot Labels)
+            lbl_lr = lbl[batch_idx, seed_idx]
+            val_lr = torch.zeros(B, num_classes, M).cuda().scatter_(1, lbl_lr.unsqueeze(1), 1.0)
+            
+            probs, _ = model(xyz, xyz_lr, val_lr, feat, feat_lr)
             pred = torch.argmax(probs, dim=1)
             
-            for b in range(xyz.shape[0]):
+            for b in range(B):
                 evaluator.update(pred[b].cpu().numpy(), lbl[b].cpu().numpy())
                 
     oa, miou, _ = evaluator.compute()
@@ -94,101 +131,78 @@ def validate_block_proxy(model, cfg, val_loader):
 
 def run_training(cfg, save_path):
     logger = logging.getLogger("geoprop")
-    logger.info(">>> [Phase 1] Training V3.0: Fixed Seeds + Dynamic Weights...")
+    logger.info(f">>> [Phase 1] Hybrid Training | Input: {cfg['model']['input_mode']} | DynWeight: {cfg['train']['use_dynamic_weights']}")
+    logger.info(f"    Seed Mode -> Train: {'FIXED' if cfg['train']['seed_mode']['train'] else 'RANDOM'} | Val: {'FIXED' if cfg['train']['seed_mode']['val'] else 'RANDOM'}")
     
     train_ds = S3DISDataset(cfg, split='train')
     val_ds = S3DISDataset(cfg, split='val')
     train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True, num_workers=8, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=cfg['train']['batch_size'], shuffle=False, num_workers=4)
     
-    model = DecoupledPointJAFAR(cfg['model']['qk_dim'], cfg['model']['k_neighbors'], input_geo_dim=6).cuda()
+    model = DecoupledPointJAFAR(cfg['model']['qk_dim'], cfg['model']['k_neighbors'], input_mode=cfg['model']['input_mode']).cuda()
     opt = optim.Adam(model.parameters(), lr=float(cfg['train']['learning_rate']), weight_decay=float(cfg['train']['weight_decay']))
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg['train']['epochs'])
     
-    # Loss functions
-    crit_mse = nn.MSELoss(reduction='none') # Need 'none' to apply weights
+    crit_mse = nn.MSELoss(reduction='none') 
     crit_bce = nn.BCELoss()
     best_miou = 0.0
     val_mode = cfg['train'].get('val_mode', 'block_proxy')
-    
+    input_mode = cfg['model']['input_mode']
+    fixed_train = cfg['train']['seed_mode']['train']
+    use_dyn_w = cfg['train']['use_dynamic_weights']
+
     all_files = []
     if val_mode == 'full_scene':
         inf_ds = S3DISDataset(cfg, split='inference')
         all_files = inf_ds.files
 
-    # Fixed seed generator for training (if enabled)
-    fix_seeds = cfg['train'].get('fix_train_seeds', False)
-    use_dyn_w = cfg['train'].get('use_dynamic_weights', False)
-    
     for ep in range(cfg['train']['epochs']):
         model.train(); loss_acc = 0
         pbar = tqdm(train_loader, desc=f"Epoch {ep+1}", leave=False)
         
-        for i, (xyz, sft, rgb, lbl) in enumerate(pbar):
+        for i, (xyz, sft, rgb, lbl, seed_mask) in enumerate(pbar):
             xyz, sft, rgb, lbl = xyz.cuda().transpose(1,2), sft.cuda().transpose(1,2), rgb.cuda().transpose(1,2), lbl.cuda()
+            seed_mask = seed_mask.cuda()
             
-            # [V3.0] Absolute Features
-            feat = torch.cat([xyz, rgb], dim=1) # [B, 6, N]
+            # 1. Feature Prep
+            feat = prepare_features(xyz, rgb, input_mode)
             
-            N_pts = xyz.shape[2]
-            M = max(int(N_pts * cfg['dataset']['label_ratio']), 1)
+            # 2. Seed Selection
+            seed_idx = get_seeds(xyz, seed_mask, fixed_train, cfg['dataset']['label_ratio'])
             
-            # 1. Seed Selection Strategy
-            if fix_seeds:
-                # Deterministic seeds per batch/sample index
-                # We use 'i' (batch idx) to seed the generator. 
-                # This ensures every epoch, batch 'i' uses the SAME seeds.
-                g_cuda = torch.Generator(device=xyz.device)
-                g_cuda.manual_seed(i) 
-                perm = torch.randperm(N_pts, generator=g_cuda, device=xyz.device)
-            else:
-                perm = torch.randperm(N_pts, device=xyz.device)
-                
-            seed_indices = perm[:M]
-            target_indices = perm[M:]
+            # 3. Gather Data
+            B, _, M = seed_idx.shape
+            batch_idx = torch.arange(B, device=xyz.device).view(B, 1).expand(-1, M)
             
-            xyz_seeds = xyz[:, :, seed_indices]
-            feat_seeds = feat[:, :, seed_indices]
-            # Value: Absolute XYZ+RGB
-            val_seeds_abs = torch.cat([xyz_seeds, rgb[:,:,seed_indices]], dim=1) 
+            # For reconstruction target (absolute values always)
+            # Seeds Value: Absolute XYZ + RGB
+            xyz_seeds = xyz[batch_idx, :, seed_idx].transpose(1, 2)
+            rgb_seeds = rgb[batch_idx, :, seed_idx].transpose(1, 2)
+            val_seeds_abs = torch.cat([xyz_seeds, rgb_seeds], dim=1)
             
-            # 2. Dynamic Weights Calculation
+            # Seeds Features (Absolute or GBlobs)
+            feat_seeds = feat[batch_idx, :, seed_idx].transpose(1, 2)
+            
+            # 4. Dynamic Weights
             loss_weights_per_point = 1.0
             if use_dyn_w:
-                # Get labels of seeds
-                lbl_seeds = lbl[:, seed_indices] # [B, M]
-                
-                # Calculate class weights based on seed distribution
-                # We calculate one set of weights per batch for stability
+                lbl_seeds = lbl[batch_idx, seed_idx]
                 class_weights = compute_class_weights(lbl_seeds, cfg['dataset'].get('num_classes', 13))
-                
-                # Assign weights to TARGET points based on THEIR gt class
-                # "I am a chair point, and chairs are rare in seeds, so reconstruct me well!"
-                lbl_target = lbl[:, target_indices] # [B, N-M]
-                # Gather weights: [B, N-M]
-                loss_weights_per_point = class_weights[lbl_target]
-                # Unsqueeze for broadcasting over channels [B, 1, N-M]
-                loss_weights_per_point = loss_weights_per_point.unsqueeze(1)
-
-            opt.zero_grad()
+                # Apply to target points
+                loss_weights_per_point = class_weights[lbl].unsqueeze(1) # [B, 1, N]
             
-            # Forward
+            opt.zero_grad()
             rec_val, bdy = model(xyz, xyz_seeds, val_seeds_abs, feat, feat_seeds)
             
-            # 3. Weighted Reconstruction Loss
-            rec_target = rec_val[:, :, target_indices]
-            gt_target = torch.cat([xyz, rgb], dim=1)[:, :, target_indices]
-            
-            # MSE (unreduced) -> Apply Weights -> Mean
-            mse_raw = crit_mse(rec_target, gt_target) # [B, 6, N-M]
+            # Target is always Absolute XYZ+RGB
+            gt_target = torch.cat([xyz, rgb], dim=1)
+            mse_raw = crit_mse(rec_val, gt_target)
             loss_rec = (mse_raw * loss_weights_per_point).mean()
             
-            # Boundary Loss
             gt_bdy = compute_gradient_boundary(xyz, rgb).unsqueeze(1)
             loss_bdy = crit_bce(bdy, gt_bdy)
             
             loss = loss_rec + cfg['train']['loss_weights']['boundary'] * loss_bdy
-            
             loss.backward(); opt.step(); loss_acc += loss.item()
             pbar.set_postfix({'loss': loss.item()})
             

@@ -1,9 +1,9 @@
 # ==============================================================================
-# Global Configuration (V3.0 - Overfitting & Dynamic Weights)
+# Global Configuration (V3.1 - The Hybrid & Configurable Branch)
 # ==============================================================================
 
 project:
-  name: "geoprop_v30_overfit"
+  name: "geoprop_v3_hybrid"
   seed: 42
   device: "cuda"
   target_dataset: "s3dis"
@@ -15,19 +15,23 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   
-  # [V3.0 Strategy]
-  # 1. Enable class-balanced weighting for MSE loss
+  # [Core Switch 1: Dynamic Weights]
+  # true: Weakly-supervised mode (Good for overfitting/specific seeds)
+  # false: Self-supervised mode (Standard V2.0 logic)
   use_dynamic_weights: true
-  # 2. Use fixed seeds during training to allow memorization
-  fix_train_seeds: true
+  
+  # [Core Switch 2: Seed Consistency]
+  # Control whether to use the fixed "Coordinate Hash" seeds or random seeds.
+  # If true, it guarantees the seeds are physically identical to inference.
+  seed_mode:
+    train: true  # true = Overfit (Fixed), false = Generalize (Random)
+    val: true    # true = Honest Validation (Hard), false = Proxy Validation (Easy)
   
   val_interval: 1
   val_mode: "block_proxy" 
   val_sample_batches: 100
 
   augmentation:
-    # [Tip] For pure overfitting, you might even want to disable jitter!
-    # But keeping it slight helps robustness around the fixed seeds.
     enabled: true
     jitter_sigma: 0.001
     jitter_clip: 0.005
@@ -38,13 +42,16 @@ train:
 dataset:
   name: "s3dis"
   num_workers: 4
+  label_ratio: 0.001
 
 model:
   qk_dim: 128
   k_neighbors: 32
-  # [V3.0 Input] Absolute XYZ(3) + Absolute RGB(3) = 6 dim
-  # This encourages the network to memorize positions.
-  input_geo_dim: 6
+  
+  # [Core Switch 3: Input Feature Mode]
+  # "absolute": Input XYZ(3)+RGB(3) = 6 dim. Best for overfitting coordinates.
+  # "gblobs":   Input GeoCov(9)+ColorCov(9) = 18 dim. Best for generalization.
+  input_mode: "absolute" 
 
 inference:
   enable: true
@@ -52,7 +59,6 @@ inference:
   save_img: true
   save_npy: true
   vis_downsample: 60000
-  vis_point_size: 20.0
   ablation_mode: true
 
   direct_inference:

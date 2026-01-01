@@ -2,41 +2,41 @@ import torch
 import torch.nn as nn
 
 class DecoupledPointJAFAR(nn.Module):
-    def __init__(self, qk_dim=64, k=16, input_geo_dim=6): 
+    def __init__(self, qk_dim=64, k=16, input_mode="absolute"): 
         super().__init__()
         self.qk_dim = qk_dim
         self.k = k
+        self.input_mode = input_mode
         
-        # [V3.0] Input is Absolute XYZ+RGB (6 dim)
-        # This encoder will learn positional dependence.
+        # Determine input dimension
+        # absolute: XYZ(3) + RGB(3) = 6
+        # gblobs:   Geo(9) + Color(9) = 18
+        if input_mode == "absolute":
+            self.input_geo_dim = 6
+        elif input_mode == "gblobs":
+            self.input_geo_dim = 18
+        else:
+            raise ValueError(f"Unknown input_mode: {input_mode}")
+
         self.geom_encoder = nn.Sequential(
-            nn.Conv1d(input_geo_dim, qk_dim, 1),
-            nn.BatchNorm1d(qk_dim),
-            nn.ReLU(),
+            nn.Conv1d(self.input_geo_dim, qk_dim, 1),
+            nn.BatchNorm1d(qk_dim), nn.ReLU(),
             nn.Conv1d(qk_dim, qk_dim, 1),
-            nn.BatchNorm1d(qk_dim),
-            nn.ReLU()
+            nn.BatchNorm1d(qk_dim), nn.ReLU()
         )
         
-        # Modulator Target: XYZ(3) + RGB(3) = 6
-        self.scale_conv = nn.Conv1d(6, qk_dim, 1)
+        self.scale_conv = nn.Conv1d(6, qk_dim, 1) # Target is always 6 (XYZ+RGB)
         self.shift_conv = nn.Conv1d(6, qk_dim, 1)
         
         self.sem_query = nn.Conv1d(qk_dim, qk_dim, 1)
         self.sem_key = nn.Conv1d(qk_dim, qk_dim, 1)
         
         self.bdy_head = nn.Sequential(
-            nn.Conv1d(qk_dim, 32, 1),
-            nn.BatchNorm1d(32),
-            nn.ReLU(),
-            nn.Conv1d(32, 1, 1),
-            nn.Sigmoid()
+            nn.Conv1d(qk_dim, 32, 1), nn.BatchNorm1d(32), nn.ReLU(),
+            nn.Conv1d(32, 1, 1), nn.Sigmoid()
         )
-        
         self.rel_pos_mlp = nn.Sequential(
-            nn.Conv2d(3, qk_dim, 1),
-            nn.BatchNorm2d(qk_dim),
-            nn.ReLU(),
+            nn.Conv2d(3, qk_dim, 1), nn.BatchNorm2d(qk_dim), nn.ReLU(),
             nn.Conv2d(qk_dim, qk_dim, 1)
         )
         self.softmax = nn.Softmax(dim=-1)
@@ -50,24 +50,18 @@ class DecoupledPointJAFAR(nn.Module):
         return tensor_flat[flat_idx].view(B, N, k, C).permute(0, 3, 1, 2)
 
     def forward(self, xyz_hr, xyz_lr, val_lr, feat_hr, feat_lr):
-        """
-        feat_hr/lr: In V3.0, this is simply [XYZ; RGB] (6 dim)
-        """
         B, _, M = xyz_lr.shape
         curr_k = min(self.k, M)
         
-        # Encode Absolute Features
         geom_hr = self.geom_encoder(feat_hr) 
         geom_lr = self.geom_encoder(feat_lr)
         
-        # Modulation (Training only)
         if val_lr.shape[1] == 6: 
             scale = self.scale_conv(val_lr)
             shift = self.shift_conv(val_lr)
             geom_lr = geom_lr * (scale + 1) + shift
 
         bdy_prob = self.bdy_head(geom_hr)
-        
         Q = self.sem_query(geom_hr)
         K = self.sem_key(geom_lr) 
         
@@ -80,7 +74,6 @@ class DecoupledPointJAFAR(nn.Module):
         
         rel_pos = xyz_hr.unsqueeze(-1) - xyz_lr_g
         pos_enc = self.rel_pos_mlp(rel_pos)
-        
         attn = self.softmax(torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5))
         val_g = self._gather_val_efficient(val_lr, k_idx)
         
