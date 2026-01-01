@@ -1,8 +1,68 @@
 import numpy as np
+import torch
 from sklearn.neighbors import NearestNeighbors, KDTree
 from sklearn.cluster import MiniBatchKMeans
 from scipy import sparse
 from scipy import stats
+
+@torch.no_grad()
+def fast_gpu_kmeans(x_tensor, n_clusters, max_iter=30, tol=1e-4):
+    """
+
+    """
+    N, D = x_tensor.shape
+    device = x_tensor.device
+    
+    safe_chunk = int(5 * 10**8 / (n_clusters * 4 + 1))
+    chunk_size = min(50000, safe_chunk) 
+    chunk_size = max(1000, chunk_size)
+
+    indices = torch.randperm(N, device=device)[:n_clusters]
+    centroids = x_tensor[indices].clone()
+    
+    for i in range(max_iter):
+        old_centroids = centroids.clone()
+        
+        cluster_sum = torch.zeros((n_clusters, D), device=device)
+        cluster_count = torch.zeros(n_clusters, device=device)
+        
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            x_chunk = x_tensor[start:end]
+            
+            dists = torch.cdist(x_chunk, centroids)
+            labels = torch.argmin(dists, dim=1)
+            
+            cluster_sum.index_add_(0, labels, x_chunk)
+
+            counts = torch.bincount(labels, minlength=n_clusters).float()
+            cluster_count += counts
+
+        mask = cluster_count > 0
+        
+        centroids[mask] = cluster_sum[mask] / cluster_count[mask].unsqueeze(1)
+        
+        if (~mask).any():
+            empty_indices = torch.where(~mask)[0]
+            valid_indices = torch.where(mask)[0]
+            new_seeds = x_tensor[torch.randint(0, N, (len(empty_indices),), device=device)]
+            centroids[empty_indices] = new_seeds
+
+        shift = torch.norm(centroids - old_centroids, dim=1).mean()
+        if shift < tol:
+            break
+            
+    final_labels = []
+    for start in range(0, N, chunk_size):
+        end = min(start + chunk_size, N)
+        x_chunk = x_tensor[start:end]
+        dists = torch.cdist(x_chunk, centroids)
+        final_labels.append(torch.argmin(dists, dim=1))
+    
+    del cluster_sum, cluster_count, old_centroids
+    
+    return torch.cat(final_labels).cpu().numpy()
+
 
 def fast_mode_voting(sv_ids, labels, n_classes):
     """
@@ -39,12 +99,16 @@ def run(cfg, xyz, rgb, pred_lbl, shape_guide, seed_mask, gt_lbl=None, confidence
     if rgb.max() > 1.1: rgb = rgb / 255.0
     N = len(xyz)
     
-    # Supervoxel Clustering
-    feats_f = np.concatenate([xyz * cfg['fine_weight_xyz'], rgb * 20.0], axis=1)
+    # Supervoxel Clustering (GPU Accelerated)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    xyz_t = torch.from_numpy(xyz).float().to(device)
+    rgb_t = torch.from_numpy(rgb).float().to(device)
+    
+    feats_t = torch.cat([xyz_t * cfg['fine_weight_xyz'], rgb_t * 20.0], 1)
+    
     n_clus_f = max(50, N // cfg['fine_voxel_n'])
-    km_f = MiniBatchKMeans(n_clusters=n_clus_f, batch_size=8192, 
-                           n_init=1, max_iter=20, random_state=42)
-    sv_f = km_f.fit_predict(feats_f)
+    
+    sv_f = fast_gpu_kmeans(feats_t, n_clus_f, max_iter=20)
     
     # Smooth SV assignments
     tree_pts = KDTree(xyz)

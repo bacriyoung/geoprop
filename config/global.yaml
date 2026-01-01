@@ -43,11 +43,11 @@ model:
   qk_dim: 128
   k_neighbors: 32
   # [V3.0 Feature]
-  input_mode: "absolute" #absolute or gblobs
+  input_mode: "gblobs" #absolute or gblobs
 
 inference:
   enable: true
-  checkpoint_path: "./outputs/s3dis/best_model.pth" 
+  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20260101_202049_ABS_TR-Rnd-Fix_INF-Abl/best_model.pth" 
   save_img: true
   save_npy: true
   vis_downsample: 60000

@@ -1,7 +1,68 @@
 import numpy as np
+import torch
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.neighbors import KDTree
 from scipy import sparse
+
+@torch.no_grad()
+def fast_gpu_kmeans(x_tensor, n_clusters, max_iter=30, tol=1e-4):
+    """
+
+    """
+    N, D = x_tensor.shape
+    device = x_tensor.device
+    
+    safe_chunk = int(5 * 10**8 / (n_clusters * 4 + 1))
+    chunk_size = min(50000, safe_chunk) 
+    chunk_size = max(1000, chunk_size)
+
+    indices = torch.randperm(N, device=device)[:n_clusters]
+    centroids = x_tensor[indices].clone()
+    
+    for i in range(max_iter):
+        old_centroids = centroids.clone()
+        
+        cluster_sum = torch.zeros((n_clusters, D), device=device)
+        cluster_count = torch.zeros(n_clusters, device=device)
+        
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            x_chunk = x_tensor[start:end]
+            
+            dists = torch.cdist(x_chunk, centroids)
+            labels = torch.argmin(dists, dim=1)
+            
+            cluster_sum.index_add_(0, labels, x_chunk)
+
+            counts = torch.bincount(labels, minlength=n_clusters).float()
+            cluster_count += counts
+
+        mask = cluster_count > 0
+        
+        centroids[mask] = cluster_sum[mask] / cluster_count[mask].unsqueeze(1)
+        
+        if (~mask).any():
+            empty_indices = torch.where(~mask)[0]
+            valid_indices = torch.where(mask)[0]
+            new_seeds = x_tensor[torch.randint(0, N, (len(empty_indices),), device=device)]
+            centroids[empty_indices] = new_seeds
+
+        shift = torch.norm(centroids - old_centroids, dim=1).mean()
+        if shift < tol:
+            break
+            
+    final_labels = []
+    for start in range(0, N, chunk_size):
+        end = min(start + chunk_size, N)
+        x_chunk = x_tensor[start:end]
+        dists = torch.cdist(x_chunk, centroids)
+        final_labels.append(torch.argmin(dists, dim=1))
+    
+    del cluster_sum, cluster_count, old_centroids
+    
+    return torch.cat(final_labels).cpu().numpy()
+
+
 
 def compute_geometry_features(xyz, k=20):
     if len(xyz) > 20000:
@@ -41,10 +102,15 @@ def run(cfg, xyz, rgb, labels, confidence=None):
     protos = {c: {'pla': proto_pla[c], 'ver': proto_ver[c]} for c in range(num_classes)}
     
     rgb_n = rgb/255.0 if rgb.max()>1.1 else rgb
-    feats = np.concatenate([xyz * cfg['weights']['xyz'], rgb_n * cfg['weights']['rgb']], 1)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    xyz_t = torch.from_numpy(xyz).float().to(device)
+    rgb_t = torch.from_numpy(rgb_n).float().to(device)
+
+    feats_t = torch.cat([xyz_t * cfg['weights']['xyz'], rgb_t * cfg['weights']['rgb']], 1)
     
-    sv = MiniBatchKMeans(max(10, len(xyz)//cfg['voxel_n']), batch_size=8192, 
-                         n_init=1, max_iter=10, random_state=42).fit_predict(feats)
+    n_clusters = max(10, len(xyz)//cfg['voxel_n'])
+    sv = fast_gpu_kmeans(feats_t, n_clusters, max_iter=10)
     
     n_sv = sv.max() + 1
     sv_counts = np.bincount(sv, minlength=n_sv) + 1e-6

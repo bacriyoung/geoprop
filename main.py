@@ -197,7 +197,7 @@ def main():
         
         model_args = {
             'qk_dim': cfg['model']['qk_dim'],
-            'k_neighbors': cfg['model']['k_neighbors'],
+            'k': cfg['model']['k_neighbors'],
             'input_mode': cfg['model']['input_mode']
         }
         model = DecoupledPointJAFAR(**model_args).cuda()

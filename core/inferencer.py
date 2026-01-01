@@ -94,6 +94,10 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     accum_counts[mask_indices] += 1
                     if t == 0: lbl_direct[mask_indices] = np.argmax(prob_np, axis=1)
 
+    del full_xyz_tensor
+    del full_rgb_tensor
+    torch.cuda.empty_cache()
+
     valid_mask = accum_counts > 0
     lbl_tta = np.full(N, -100, dtype=int)
     if valid_mask.sum() > 0:

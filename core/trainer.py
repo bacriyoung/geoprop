@@ -149,7 +149,12 @@ def run_training(cfg, save_path):
     train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True, num_workers=8, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=cfg['train']['batch_size'], shuffle=False, num_workers=4)
     
-    model = DecoupledPointJAFAR(cfg['model']['qk_dim'], cfg['model']['k_neighbors'], input_mode=cfg['model']['input_mode']).cuda()
+    model = DecoupledPointJAFAR(
+        qk_dim=cfg['model']['qk_dim'], 
+        k=cfg['model']['k_neighbors'], 
+        input_mode=cfg['model']['input_mode']
+    ).cuda()
+
     opt = optim.Adam(model.parameters(), lr=float(cfg['train']['learning_rate']), weight_decay=float(cfg['train']['weight_decay']))
     sched = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg['train']['epochs'])
     
