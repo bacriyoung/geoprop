@@ -15,9 +15,7 @@ from geoprop.models.point_jafar import DecoupledPointJAFAR
 
 def load_config(args):
     """
-    [V2.0 Logic Restored]
     Load Global Config and AUTOMATICALLY merge with Dataset Specific Config.
-    This eliminates redundancy.
     """
     if not os.path.exists(args.config):
         raise FileNotFoundError(f"Global config not found at: {args.config}")
@@ -27,8 +25,7 @@ def load_config(args):
     
     target_dataset = cfg['project']['target_dataset']
     
-    # Locate dataset config dynamically (Standard V2.0 behavior)
-    # Assumes config/dataset_name/dataset_name.yaml
+    # Locate dataset config dynamically
     base_conf_dir = os.path.dirname(os.path.abspath(args.config))
     dataset_config_path = os.path.join(
         base_conf_dir, 
@@ -43,27 +40,55 @@ def load_config(args):
         dataset_cfg = yaml.safe_load(f)
         
     # Merge: Dataset config overrides Global placeholders
-    # This ensures 'root_dir' and 'label_ratio' are only managed in s3dis.yaml
     if 'dataset' in dataset_cfg:
-        # Update existing keys, preserve 'num_workers' if in global
         for k, v in dataset_cfg['dataset'].items():
             cfg['dataset'][k] = v
             
     return cfg
 
+def generate_smart_suffix(cfg):
+    """
+    Generates a descriptive suffix based on active configuration.
+    Format: _{InputMode}_{TrainStatus}_{InferStatus}
+    """
+    tags = []
+    
+    # 1. Input Mode
+    inp = cfg['model'].get('input_mode', 'gblobs')
+    tags.append(inp[:3].upper()) # ABS or GBL
+    
+    # 2. Training Status
+    if cfg['train']['enable']:
+        t_seed = "Fix" if cfg['train']['seed_mode']['train'] else "Rnd"
+        v_seed = "Fix" if cfg['train']['seed_mode']['val'] else "Rnd"
+        # Format: TR-Fix-Rnd (Train Fixed, Val Random)
+        tags.append(f"TR-{t_seed}-{v_seed}")
+        
+    # 3. Inference Status
+    if cfg['inference']['enable']:
+        mode = "Abl" if cfg['inference'].get('ablation_mode') else "Prod"
+        tags.append(f"INF-{mode}")
+        
+    return "_".join(tags)
+
 def prepare_output_dirs(cfg, timestamp):
     """
-    [V2.0 Logic Restored]
-    Generate output directory structure relative to the script location.
+    Generate output directory structure.
+    Adds smart suffix to timestamp for easier identification.
     """
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    base_output = os.path.join(root_dir, "outputs", cfg['dataset']['name'], timestamp)
+    
+    # Add smart suffix
+    suffix = generate_smart_suffix(cfg)
+    folder_name = f"{timestamp}_{suffix}"
+    
+    base_output = os.path.join(root_dir, "outputs", cfg['dataset']['name'], folder_name)
     
     dirs = {
         'root': base_output,
         'logs': os.path.join(base_output, 'logs'),
         'viz': os.path.join(base_output, 'viz'),
-        'npy': os.path.join(base_output, 'npy') # V2.0 used 'pseudo_labels' or 'npy'
+        'npy': os.path.join(base_output, 'npy')
     }
     
     for d in dirs.values():
@@ -72,11 +97,8 @@ def prepare_output_dirs(cfg, timestamp):
     return dirs
 
 def log_key_config(cfg, logger):
-    """
-    [Hybrid Log] V2.0 Detailed Modules + V3.0 New Features
-    """
     logger.info("="*80)
-    logger.info(f"GEOPROP PIPELINE CONFIGURATION SUMMARY (V3.0)")
+    logger.info(f"GEOPROP PIPELINE CONFIGURATION SUMMARY (V3.0 Final)")
     logger.info("="*80)
     
     # 1. Project & Data
@@ -87,7 +109,7 @@ def log_key_config(cfg, logger):
     logger.info(f"Label Ratio    : {ds.get('label_ratio', 'MISSING')}")
     logger.info("-" * 80)
     
-    # 2. V3.0 Strategies (The New Stuff)
+    # 2. V3.0 Strategies
     tr = cfg['train']
     md = cfg['model']
     logger.info(f"V3.0 STRATEGIES")
@@ -104,7 +126,7 @@ def log_key_config(cfg, logger):
         logger.info(f"  Val Interval : {tr['val_interval']}")
     logger.info("-" * 80)
     
-    # 4. Inference Details (V2.0 Detailed Style)
+    # 4. Inference Details
     inf = cfg['inference']
     logger.info(f"INFER Enabled  : {inf['enable']}")
     if inf['enable']:
@@ -125,23 +147,23 @@ def log_key_config(cfg, logger):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='config/global.yaml')
-    # output_root is now used as base if needed, but we default to relative
     parser.add_argument('--output_root', type=str, default='outputs') 
     args = parser.parse_args()
     
     # 0. Generate timestamp
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # 1. Load & Merge Config (The Fix)
+    # 1. Load & Merge Config
     cfg = load_config(args)
     
-    # 2. Prepare directories (The Fix)
+    # 2. Prepare directories (With Smart Suffix)
     out_dirs = prepare_output_dirs(cfg, timestamp)
     cfg['paths'] = out_dirs 
     
     # 3. Setup Logger
     logger = setup_logger(out_dirs['logs'], log_filename=f"pipeline_{timestamp}.log")
     logger.info(f"Task Started at: {timestamp}")
+    logger.info(f"Output Directory: {out_dirs['root']}")
     
     # 4. Log Detailed Configuration
     log_key_config(cfg, logger)

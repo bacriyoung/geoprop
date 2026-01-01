@@ -19,7 +19,7 @@ train:
   use_dynamic_weights: true
   
   seed_mode:
-    train: true # False = Random (V2.0)
+    train: false # False = Random (V2.0)
     val: true   # False = Random (V2.0)
   
   val_interval: 1
@@ -43,7 +43,7 @@ model:
   qk_dim: 128
   k_neighbors: 32
   # [V3.0 Feature]
-  input_mode: "absolute" 
+  input_mode: "gblobs" #absolute or gblobs
 
 inference:
   enable: true
