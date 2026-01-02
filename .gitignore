@@ -12,6 +12,7 @@ runs/
 wandb/
 checkpoints/
 datasets/
+scripts/
 
 # --- 3D/遥感 大数据文件 ---
 *.pth

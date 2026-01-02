@@ -121,7 +121,7 @@ def main():
     parser.add_argument('--input', type=str, default='/home/work/research/geoprop/datasets/scannet/train', help="Path or Directory")
     parser.add_argument('--checkpoint', type=str, default='/home/work/research/geoprop/outputs/s3dis/20260102_175345_GBL_TR-Rnd-Rnd_INF-Abl/last_model.pth')
     parser.add_argument('--config', type=str, default='config/global.yaml')
-    parser.add_argument('--output_dir', type=str, default='outputs/scannet_full')
+    parser.add_argument('--output_dir', type=str, default='outputs/scannet_full_npy')
     parser.add_argument('--input_mode', type=str, default='gblobs', choices=['absolute', 'gblobs'])
     parser.add_argument('--aggressive_tta', action='store_true', help="Force enable rotation voting")
     parser.add_argument('--no_viz', action='store_true', help="Disable visualization")

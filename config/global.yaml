@@ -16,7 +16,7 @@ train:
   weight_decay: 0.0001
   
   # [V3.0 Features - Default OFF for V2.0 Compatibility]
-  use_dynamic_weights: false
+  use_dynamic_weights: true
   
   seed_mode:
     train: false # False = Random (V2.0)
@@ -52,9 +52,9 @@ inference:
   enable: true
   checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20260102_113104_GBL_TR-Rnd-Fix_INF-Prod/last_model.pth" 
   save_img: true
-  save_npy: false
+  save_npy: true
   vis_downsample: 60000
-  ablation_mode: true
+  ablation_mode: false
 
   direct_inference:
     save_output: true
