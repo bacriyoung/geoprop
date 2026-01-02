@@ -16,7 +16,7 @@ train:
   weight_decay: 0.0001
   
   # [V3.0 Features - Default OFF for V2.0 Compatibility]
-  use_dynamic_weights: true
+  use_dynamic_weights: false
   
   seed_mode:
     train: false # False = Random (V2.0)
@@ -51,7 +51,7 @@ inference:
   save_img: true
   save_npy: true
   vis_downsample: 60000
-  ablation_mode: true
+  ablation_mode: false
 
   direct_inference:
     save_output: true

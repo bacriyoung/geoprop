@@ -58,21 +58,55 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                 if len(mask_indices) > 50:
                     b_xyz = torch.from_numpy(aug_xyz[mask_indices]).float().cuda().unsqueeze(0).transpose(1, 2)
                     b_rgb = full_rgb_tensor[:, :, mask_indices]
-                    
+
+                    # --- 核心修复：种子标签合法性过滤 ---
                     block_seed_labels = global_seed_map[mask_indices]
                     rel_seed_idx = np.where(block_seed_labels != -1)[0]
                     
-                    if len(rel_seed_idx) == 0: continue
+                    # 1. 提取这些种子的原始标签
+                    temp_seed_lbls = block_seed_labels[rel_seed_idx]
+                    
+                    # 2. 判定哪些标签是合法的 (必须在 0 到 num_classes-1 之间)
+                    # 这样可以自动踢掉 ScanNet 里的 255 或 -100
+                    valid_range_mask = (temp_seed_lbls >= 0) & (temp_seed_lbls < num_classes)
+                    
+                    # 3. 仅保留合法的种子索引和标签
+                    rel_seed_idx = rel_seed_idx[valid_range_mask]
+                    current_seed_lbls = temp_seed_lbls[valid_range_mask]
+                    
+                    # 4. 如果过滤后这个块里没种子了，跳过
+                    if len(rel_seed_idx) == 0:
+                        continue
+                        
+                    # 5. 限制种子最大数量 (防止显存溢出)
                     if len(rel_seed_idx) > 512:
                         rng = np.random.RandomState(42 + len(mask_indices))
-                        rel_seed_idx = rng.choice(rel_seed_idx, 512, replace=False)
-                    
-                    current_seed_lbls = block_seed_labels[rel_seed_idx]
-                    
+                        sub_idx = rng.choice(len(rel_seed_idx), 512, replace=False)
+                        rel_seed_idx = rel_seed_idx[sub_idx]
+                        current_seed_lbls = current_seed_lbls[sub_idx]
+
                     # Prepare relative coordinates (Centering)
                     block_center = b_xyz.mean(2, keepdim=True)
+                    # 确保 ls_xyz 拿到的也是过滤后的有效种子坐标
                     loc = ls_xyz = b_xyz[:, :, rel_seed_idx] - block_center
                     cur = b_xyz - block_center
+                    
+                    # with torch.no_grad():
+
+                    # block_seed_labels = global_seed_map[mask_indices]
+                    # rel_seed_idx = np.where(block_seed_labels != -1)[0]
+                    
+                    # if len(rel_seed_idx) == 0: continue
+                    # if len(rel_seed_idx) > 512:
+                    #     rng = np.random.RandomState(42 + len(mask_indices))
+                    #     rel_seed_idx = rng.choice(rel_seed_idx, 512, replace=False)
+                    
+                    # current_seed_lbls = block_seed_labels[rel_seed_idx]
+                    
+                    # # Prepare relative coordinates (Centering)
+                    # block_center = b_xyz.mean(2, keepdim=True)
+                    # loc = ls_xyz = b_xyz[:, :, rel_seed_idx] - block_center
+                    # cur = b_xyz - block_center
                     
                     with torch.no_grad():
                         if input_mode == "absolute":
