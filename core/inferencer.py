@@ -55,19 +55,30 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
             for y in np.arange(min_c[1], max_c[1], 1.5):
                 mask_indices = np.where((aug_xyz[:,0]>=x) & (aug_xyz[:,0]<x+2.0) & 
                                         (aug_xyz[:,1]>=y) & (aug_xyz[:,1]<y+2.0))[0]
+
                 if len(mask_indices) > 50:
                     b_xyz = torch.from_numpy(aug_xyz[mask_indices]).float().cuda().unsqueeze(0).transpose(1, 2)
                     b_rgb = full_rgb_tensor[:, :, mask_indices]
                     
+                    # [V3.1 Fix] Robust Seed Filtering for ScanNet Compatibility
+                    # Filter out seeds with invalid labels (e.g., 255 or -100)
                     block_seed_labels = global_seed_map[mask_indices]
-                    rel_seed_idx = np.where(block_seed_labels != -1)[0]
+                    temp_rel_idx = np.where(block_seed_labels != -1)[0]
+                    temp_seed_lbls = block_seed_labels[temp_rel_idx]
+                    
+                    # Keep only labels within [0, num_classes-1] to prevent CUDA errors
+                    valid_range_mask = (temp_seed_lbls >= 0) & (temp_seed_lbls < num_classes)
+                    rel_seed_idx = temp_rel_idx[valid_range_mask]
+                    current_seed_lbls = temp_seed_lbls[valid_range_mask]
                     
                     if len(rel_seed_idx) == 0: continue
+                    
+                    # Cap max seeds to prevent OOM
                     if len(rel_seed_idx) > 512:
                         rng = np.random.RandomState(42 + len(mask_indices))
-                        rel_seed_idx = rng.choice(rel_seed_idx, 512, replace=False)
-                    
-                    current_seed_lbls = block_seed_labels[rel_seed_idx]
+                        sub_choice = rng.choice(len(rel_seed_idx), 512, replace=False)
+                        rel_seed_idx = rel_seed_idx[sub_choice]
+                        current_seed_lbls = current_seed_lbls[sub_choice]
                     
                     # Prepare relative coordinates (Centering)
                     block_center = b_xyz.mean(2, keepdim=True)
@@ -75,8 +86,8 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                     cur = b_xyz - block_center
                     
                     with torch.no_grad():
+                        # Feature Preparation
                         if input_mode == "absolute":
-                            # Use 'cur' (Centered) to match training!
                             feat = torch.cat([cur, b_rgb], dim=1)
                         elif input_mode == "gblobs":
                             geo, col = compute_dual_gblobs(b_xyz, b_rgb, k=32)
@@ -87,7 +98,34 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                         ls_val_sem = torch.zeros(1, num_classes, len(rel_seed_idx)).cuda()
                         ls_val_sem.scatter_(1, torch.from_numpy(current_seed_lbls).long().cuda().unsqueeze(0).unsqueeze(1), 1.0)
                         
-                        probs, _ = model(cur, loc, ls_val_sem, feat, feat_seeds)
+                        # [V3.1 Feature] Aggressive TTA: Rotation Voting
+                        # Check config for aggressive mode
+                        use_aggressive = cfg['inference'].get('tta', {}).get('aggressive', False)
+                        # Only rotate on the first jitter round for efficiency
+                        rot_angles = [0, 1, 2, 3] if (use_aggressive and t == 0) else [0]
+                        
+                        avg_probs = None
+                        
+                        for rot_idx in rot_angles:
+                            cur_aug = cur.clone()
+                            loc_aug = loc.clone()
+                            
+                            if rot_idx > 0:
+                                # Apply 90-degree rotations around Z-axis
+                                theta = rot_idx * np.pi / 2
+                                c, s = np.cos(theta), np.sin(theta)
+                                # [Fix] Ensure rot_mat has the same dtype (float32) as input tensor
+                                rot_mat = torch.tensor([[c, -s, 0], [s, c, 0], [0, 0, 1]], 
+                                                       device=cur.device, dtype=cur.dtype)
+                                cur_aug = torch.matmul(cur_aug.transpose(1,2), rot_mat).transpose(1,2)
+                                loc_aug = torch.matmul(loc_aug.transpose(1,2), rot_mat).transpose(1,2)
+                            
+                            p, _ = model(cur_aug, loc_aug, ls_val_sem, feat, feat_seeds)
+                            
+                            if avg_probs is None: avg_probs = p
+                            else: avg_probs += p
+                        
+                        probs = avg_probs / len(rot_angles)
                     
                     prob_np = probs.squeeze(0).transpose(0, 1).cpu().numpy()
                     accum_probs[mask_indices] += prob_np
@@ -113,6 +151,13 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
     if cfg['inference']['tta']['enabled']: result_stages["TTA Integration"] = lbl_tta
     current_lbl = lbl_tta
     
+    # [Restored] Confidence Filter Logic
+    if cfg['inference']['confidence_filter']['enabled']:
+        # Assuming confidence_filter has a run method compatible with other modules
+        # If strict reconstruction error filtering is needed
+        current_lbl = confidence_filter.run(cfg['inference']['confidence_filter'], xyz_full, rgb_full, current_lbl, confidence=confidence_map)
+        result_stages["Confidence Filter"] = current_lbl
+
     if cfg['inference']['geometric_gating']['enabled']:
         current_lbl = geometric_gating.run(cfg['inference']['geometric_gating'], xyz_full, rgb_full, current_lbl, confidence=confidence_map)
         result_stages["Geometric Gating"] = current_lbl
@@ -161,31 +206,47 @@ def run_inference(cfg, model):
     ablation_mode = cfg['inference'].get('ablation_mode', False)
     eval_stages = all_stages if ablation_mode else ([all_stages[-1]] if all_stages else [])
     
-    stage_key_map = {
-        "Direct Inference": "direct_inference",
-        "TTA Integration": "tta",
-        "Geometric Gating": "geometric_gating",
-        "Graph Refine": "graph_refine",
-        "Spatial Smooth": "spatial_smooth"
-    }
+    # Define all possible stages to ensure they appear in the log
+    full_stage_map = OrderedDict([
+        ("Direct Inference", "direct_inference"),
+        ("TTA Integration", "tta"),
+        ("Confidence Filter", "confidence_filter"), # [Added]
+        ("Geometric Gating", "geometric_gating"),
+        ("Graph Refine", "graph_refine"),
+        ("Spatial Smooth", "spatial_smooth")
+    ])
 
     logger.info("-" * 80)
     logger.info("Inference Pipeline Configuration Summary:")
-    for stage in eval_stages:
-        key = stage_key_map.get(stage)
-        status_info = "Enabled"
-        save_info = ""
+    
+    # Iterate over ALL known stages, not just the enabled ones
+    for stage_name, config_key in full_stage_map.items():
+        is_enabled = False
         
-        # 检查是否开启了 NPY 保存
-        if key:
-            stage_cfg = cfg['inference'].get(key, {})
+        # Check 'enabled' status in config
+        if config_key == "direct_inference":
+            is_enabled = True # Always enabled
+        else:
+            is_enabled = cfg['inference'].get(config_key, {}).get('enabled', False)
+            
+        status_info = "Enabled" if is_enabled else "Disabled"
+        
+        # Check Save Status
+        save_info = ""
+        if is_enabled:
+            stage_cfg = cfg['inference'].get(config_key, {})
             if cfg['inference']['save_npy'] and stage_cfg.get('save_output', False):
                 save_info = "| [NPY SAVED]"
             else:
                 save_info = "| [No Save]"
-        
-        logger.info(f"  > {stage:<20} : {status_info} {save_info}")
+        else:
+            save_info = "" # Don't show save info if disabled
+
+        logger.info(f"  > {stage_name:<20} : {status_info} {save_info}")
     logger.info("-" * 80)
+    
+    # [Crucial] Update stage_key_map for later usage in saving/metrics
+    stage_key_map = full_stage_map
 
     evals = {stage: IoUCalculator(num_classes) for stage in eval_stages}
     
@@ -195,19 +256,55 @@ def run_inference(cfg, model):
             if key and cfg['inference'].get(key, {}).get('save_output', False):
                 os.makedirs(os.path.join(cfg['paths']['npy'], stage.replace(" ", "_")), exist_ok=True)
             
-    logger.info(f"{'Room Name':<20} | " + " | ".join([f"{s:<18}" for s in eval_stages]))
+    # [Log Header Logic]
+    # Check if we are in ablation mode or production mode
+    if ablation_mode:
+        # Ablation mode: Show mIoU for each stage column
+        header = f"{'Room Name':<20} | " + " | ".join([f"{s:<18}" for s in eval_stages])
+    else:
+        # Production mode: Show per-class IoU (Horizontal) + mIoU + OA
+        # Truncate class names to 6 chars for compactness to fit in one line
+        cls_headers = " | ".join([f"{c[:6]:<6}" for c in CLASS_NAMES]) 
+        header = f"{'Room Name':<20} | {cls_headers} | {'mIoU':<6} | {'OA':<6}"
+    
+    logger.info("-" * len(header))
+    logger.info(header)
+    logger.info("-" * len(header))
     
     for f in tqdm(dataset.files):
         room_name = os.path.basename(f)
         data = np.load(f)
         res = process_room_full_pipeline(cfg, model, data, return_all=True)
         
-        ious = []
-        for stage in eval_stages:
-            evals[stage].update(res[stage], res['GT'])
-            _, miou = calc_local_metrics(res[stage], res['GT'], num_classes)
-            ious.append(miou)
-        logger.info(f"{room_name[:20]:<20} | " + " | ".join([f"{v:.4f}".center(18) for v in ious]))
+        # [Log Row Logic]
+        if ablation_mode:
+            # Ablation mode: Original logic (calculate mIoU for each stage)
+            ious = []
+            for stage in eval_stages:
+                evals[stage].update(res[stage], res['GT'])
+                _, miou = calc_local_metrics(res[stage], res['GT'], num_classes)
+                ious.append(miou)
+            
+            row_str = f"{room_name[:20]:<20} | " + " | ".join([f"{v:.4f}".center(18) for v in ious])
+            logger.info(row_str)
+            
+        else:
+            # Production mode: Calculate and print detailed class metrics for the single stage
+            if len(eval_stages) > 0:
+                stage = eval_stages[-1] # Get the last (and only) stage
+                
+                # Update global evaluator
+                evals[stage].update(res[stage], res['GT'])
+                
+                # Calculate temporary metrics for the current room
+                room_eval = IoUCalculator(num_classes)
+                room_eval.update(res[stage], res['GT'])
+                oa, miou, cls_ious = room_eval.compute()
+                
+                # Format: Room Name | Class IoUs | mIoU | OA
+                cls_str = " | ".join([f"{v*100:.1f}".center(6) for v in cls_ious])
+                row_str = f"{room_name[:20]:<20} | {cls_str} | {miou*100:.1f}% | {oa*100:.1f}%"
+                logger.info(row_str)
         
         if cfg['inference']['save_img']:
             generate_viz(data[:,:3], {k:res[k] for k in eval_stages}, res['GT'], room_name, cfg['paths']['viz'])

@@ -101,10 +101,31 @@ class S3DISDataset(Dataset):
         seed_mask = torch.from_numpy(is_seed.astype(bool))
 
         # [Augmentation] Now we can jitter safely
+        # [Augmentation] Domain Generalization Strategy (Applied AFTER seed hash)
         if self.split == 'train' and self.cfg['train']['augmentation']['enabled']:
+            aug_cfg = self.cfg['train']['augmentation']
             np.random.seed() 
-            sigma = self.cfg['train']['augmentation']['jitter_sigma']
-            clip = self.cfg['train']['augmentation']['jitter_clip']
+            
+            # 1. Random Rotation (Z-axis) - Crucial for cross-domain generalization
+            if aug_cfg.get('rotate', False):
+                angle = np.random.uniform(0, 2 * np.pi)
+                cosval, sinval = np.cos(angle), np.sin(angle)
+                R = np.array([[cosval, -sinval, 0], [sinval, cosval, 0], [0, 0, 1]])
+                xyz = np.dot(xyz, R.T)
+            
+            # 2. Random Scaling
+            if aug_cfg.get('scale', False):
+                scale = np.random.uniform(0.8, 1.2)
+                xyz *= scale
+                
+            # 3. Random Flip
+            if aug_cfg.get('flip', False):
+                if np.random.random() > 0.5: xyz[:, 0] = -xyz[:, 0]
+                if np.random.random() > 0.5: xyz[:, 1] = -xyz[:, 1]
+
+            # 4. Standard Jitter
+            sigma = aug_cfg.get('jitter_sigma', 0.001)
+            clip = aug_cfg.get('jitter_clip', 0.005)
             xyz += np.clip(sigma * np.random.randn(*xyz.shape), -clip, clip)
         
         xyz_t = torch.from_numpy(xyz).float()

@@ -16,11 +16,11 @@ train:
   weight_decay: 0.0001
   
   # [V3.0 Features - Default OFF for V2.0 Compatibility]
-  use_dynamic_weights: true
+  use_dynamic_weights: false
   
   seed_mode:
     train: false # False = Random (V2.0)
-    val: true   # False = Random (V2.0)
+    val: false   # False = Random (V2.0)
   
   val_interval: 1
   val_mode: "block_proxy" 
@@ -30,6 +30,9 @@ train:
     enabled: true
     jitter_sigma: 0.001
     jitter_clip: 0.005
+    rotate: true      # Random rotation around Z-axis
+    scale: true       # Random scaling [0.8, 1.2]
+    flip: true        # Random flipping (X/Y)
 
   loss_weights:
     boundary: 0.3
@@ -47,9 +50,9 @@ model:
 
 inference:
   enable: true
-  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20260101_202049_ABS_TR-Rnd-Fix_INF-Abl/best_model.pth" 
+  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20260102_113104_GBL_TR-Rnd-Fix_INF-Prod/last_model.pth" 
   save_img: true
-  save_npy: true
+  save_npy: false
   vis_downsample: 60000
   ablation_mode: true
 
@@ -60,6 +63,7 @@ inference:
     enabled: true
     rounds: 5
     jitter: 0.005 
+    aggressive: true # [V3.1 Update] Enable rotation voting (0, 90, 180, 270)
     save_output: true
 
   confidence_filter:
