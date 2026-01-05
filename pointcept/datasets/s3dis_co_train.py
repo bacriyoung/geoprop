@@ -19,9 +19,9 @@ class S3DISCoTrainDataset(Dataset):
                  loop=1,
                  labeled_ratio=0.001,
                  # 🟢 回归纯随机策略，但保留参数接口
-                 hash_seed_1=10264649,
-                 hash_seed_2=72138476,
-                 hash_seed_3=69787772): 
+                 hash_seed_1=73856093,
+                 hash_seed_2=19349663,
+                 hash_seed_3=83492791): 
         self.data_root = data_root
         self.split = split
         self.transform = Compose(transform)
