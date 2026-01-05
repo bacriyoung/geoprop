@@ -19,7 +19,7 @@ try:
 except ImportError:
     flash_attn = None
 
-from pointcept.models.point_prompt_training import PDNorm
+from .pdnorm import PDNorm
 from pointcept.models.builder import MODELS
 from pointcept.models.utils.misc import offset2bincount
 from pointcept.models.utils.structure import Point
