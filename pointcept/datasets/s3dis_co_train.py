@@ -75,42 +75,34 @@ class S3DISCoTrainDataset(Dataset):
     def __getitem__(self, idx):
         room_dir = self.data_list[idx]
         try:
+            # 1. 这里的 coord 是完整的房间数据
             coord = np.load(os.path.join(room_dir, "coord.npy")).astype(np.float32)
             color = np.load(os.path.join(room_dir, "color.npy")).astype(np.float32)
             segment = np.load(os.path.join(room_dir, "segment.npy")).astype(np.int64).reshape(-1)
         except:
             return self.__getitem__(np.random.randint(0, len(self)))
 
-        # 1. 裁剪
-        coord, color, segment = self.crop_fixed_size(coord, color, segment)
-
         # ==========================================================
-        # 🟢 [Step 1] 几何哈希采样 (Version 1 Logic)
+        # 🟢 [Optimized Step 1] 几何哈希采样 (在 Crop 前计算，确保全场景点标签固定)
         # ==========================================================
-        # 这是一个确定的过程，不受 augment 影响
         if self.split == 'train':
-            # 直接使用坐标乘大质数，不要 Grid
-            # 这是你觉得效果最好的那一版的逻辑，只是参数化了
+            # 基于原始完整坐标计算 Hash，确保无论怎么 Crop，同一个坐标点标签状态永恒不变
             h1 = np.abs(coord[:, 0] * self.h1_k).astype(np.int64)
             h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
             h3 = np.abs(coord[:, 2] * self.h3_k).astype(np.int64)
-            
             seed_hash = h1 ^ h2 ^ h3
-            
             threshold = int(self.labeled_ratio * 100000)
             label_mask = (seed_hash % 100000) < threshold
             
-            # 保底
-            if label_mask.sum() == 0:
-                fallback_idx = np.random.randint(len(label_mask))
-                label_mask[fallback_idx] = True
-
+            # 将无标签点设为 ignore_index
             segment[~label_mask] = 255
 
+        # 2. 裁剪 (此时 segment 已经包含了固定的弱监督标签)
+        coord, color, segment = self.crop_fixed_size(coord, color, segment)
+
         # ==========================================================
-        # 🟢 [Step 2] 数据增强 (必须保留！)
+        # 🟢 [Optimized Step 2] 数据增强 (温和版)
         # ==========================================================
-        # 警告：如果你注释掉这里，指标会瞬间变好看，但模型是废的。
         if self.split == 'train':
             # Rotate
             angle = np.random.uniform(0, 2 * np.pi)
@@ -120,10 +112,12 @@ class S3DISCoTrainDataset(Dataset):
             # Scale
             scale = np.random.uniform(0.9, 1.1)
             coord *= scale
-            # Jitter
-            sigma, clip = 0.001, 0.005
-            jitter = np.clip(sigma * np.random.randn(*coord.shape), -1 * clip, clip)
-            coord += jitter
+            
+            # Jitter: 🔴 弱监督下建议默认关闭，用户可根据需求在 README 自行开启
+            # sigma, clip = 0.001, 0.005
+            # jitter = np.clip(sigma * np.random.randn(*coord.shape), -1 * clip, clip)
+            # coord += jitter
+            
             # Flip
             if np.random.random() > 0.5: coord[:, 0] = -coord[:, 0]
             if np.random.random() > 0.5: coord[:, 1] = -coord[:, 1]
