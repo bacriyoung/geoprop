@@ -259,39 +259,46 @@ class GeoPTV3(nn.Module):
         # -----------------------------------------------------------
         # B. Stage I: PTv3 Forward (With Order Correction)
         # -----------------------------------------------------------
-        # 🔴 [FIX 1] 显式构建 Point 对象
+        # 🔴 [FIX Step 1] 显式构建 Point 对象，作为这一轮 Forward 的“根”
+        # 这样 Pointcept 会记录下原始的输入状态
         point = Point(ptv3_input)
         
-        # 🔴 [FIX 2] 传入 Point 对象给 PTv3
-        # PTv3 会在内部对 point 进行 serialization (排序) 和 sparsify (稀疏化)
-        # 它会原地修改 point 对象，或者返回一个新的 point 对象（包含 inverse 索引）
+        # 🔴 [FIX Step 2] 传入 PTv3
+        # PTv3 会在内部做 serialization 和 sparsify，但它会以 point 为 parent 进行
         out_point = self.sem_stream(point)
         
-        # 🔴 [FIX 3] 特征对齐：从“稀疏乱序”还原回“稠密正序”
-        # out_point.feat 是乱序的 (Hilbert Order)
-        sem_feat_raw = out_point.feat
-        
-        # 步骤 A: 反体素化 (Un-sparsify) - 如果发生了特征合并
-        if out_point.sparse:
-            # inverse 映射：稀疏点 -> 稠密点 (但依然是乱序的)
-            sem_feat_dense_sorted = sem_feat_raw[out_point.inverse]
-        else:
-            sem_feat_dense_sorted = sem_feat_raw
+        # 🔴 [FIX Step 3] 还原特征 (Unpooling / Mapping Back)
+        # 这是 DefaultSegmentorV2 的核心逻辑，我们必须手动在这里执行
+        # 如果 Backbone 进行了下采样或稀疏化，我们需要沿着 pooling_parent 链条找回原始点
+        if isinstance(out_point, Point):
+            while "pooling_parent" in out_point.keys():
+                # 获取父节点（分辨率更高/未稀疏化的点）
+                parent = out_point.pop("pooling_parent")
+                # 获取映射索引
+                inverse = out_point.pop("pooling_inverse")
+                # 将当前特征广播回父节点
+                # 注意：这里我们覆盖父节点的特征，或者拼接。对于分割任务，通常是直接赋值回去。
+                # 但由于 out_point.feat 已经是处理过的特征，我们希望把它传回去。
+                # 这里假设 dim=-1 是特征维度。
+                # 如果 parent.feat 和 out_point.feat 维度不同（encoder vs decoder），直接用 out_point 的
+                parent.feat = out_point.feat[inverse]
+                out_point = parent
             
-        # 步骤 B: 反序列化 (Un-serialize) - 还原回原始输入顺序
-        # serialized_inverse 映射：乱序点 -> 原始顺序点
-        # 注意：这里必须使用输入时的 point 对象中的索引
-        sem_feat_original = sem_feat_dense_sorted[point.serialized_inverse]
-        
-        # 现在 sem_feat_original 的顺序和 input_dict['coord'] 完全一致了
-        
+            # 循环结束后，out_point 变回了最初的 point (即我们创建的那个)
+            # 此时 out_point.feat 已经是对齐原始输入的了
+            sem_feat_original = out_point.feat
+        else:
+            # 如果 backbone 没返回 Point，说明它没做稀疏化（对于 PTv3 不太可能）
+            sem_feat_original = out_point
+
         # -----------------------------------------------------------
-        # C. Feature Assembly for JAFAR (Lean 12-Dim)
+        # C. Feature Assembly for JAFAR
         # -----------------------------------------------------------
-        # 安全地 Reshape
+        # 此时 sem_feat_original 的形状一定是 (Total_N, C)，且顺序与 flat_coord 一致
+        # 可以安全地 reshape
         sem_feat_dense = sem_feat_original.view(B_size, self.num_points, -1)
         
-        # Aux Head 也使用对齐后的特征，确保 Loss 计算正确
+        # Aux Head 也使用对齐后的特征
         aux_logits = self.aux_head(sem_feat_original) 
         
         # 1. GBlobs (9-dim)
