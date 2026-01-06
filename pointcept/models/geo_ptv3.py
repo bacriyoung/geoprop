@@ -6,7 +6,6 @@ import inspect
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
-from pointcept.models.utils.structure import Point
 
 # =========================================================================
 # 0. GBlobs Calculation Utilities
@@ -248,6 +247,7 @@ class GeoPTV3(nn.Module):
         ptv3_input["feat"] = flat_feat
         
         # Input Channel Adaptation
+        # If PTv3 expects 6 channels (RGB+XYZ) but 'feat' is 3 (RGB), append coords.
         if self.ptv3_in_channels == 6 and flat_feat.shape[1] == 3:
             ptv3_input["feat"] = torch.cat([flat_feat, flat_coord], dim=1)
         
@@ -257,49 +257,15 @@ class GeoPTV3(nn.Module):
             ptv3_input["grid_coord"] = flat_grid
 
         # -----------------------------------------------------------
-        # B. Stage I: PTv3 Forward (With Order Correction)
+        # B. Stage I: PTv3 Forward
         # -----------------------------------------------------------
-        # 🔴 [FIX Step 1] 显式构建 Point 对象，作为这一轮 Forward 的“根”
-        # 这样 Pointcept 会记录下原始的输入状态
-        point = Point(ptv3_input)
+        sem_feat_sparse = self.sem_stream(ptv3_input).feat 
+        aux_logits = self.aux_head(sem_feat_sparse) 
         
-        # 🔴 [FIX Step 2] 传入 PTv3
-        # PTv3 会在内部做 serialization 和 sparsify，但它会以 point 为 parent 进行
-        out_point = self.sem_stream(point)
-        
-        # 🔴 [FIX Step 3] 还原特征 (Unpooling / Mapping Back)
-        # 这是 DefaultSegmentorV2 的核心逻辑，我们必须手动在这里执行
-        # 如果 Backbone 进行了下采样或稀疏化，我们需要沿着 pooling_parent 链条找回原始点
-        if isinstance(out_point, Point):
-            while "pooling_parent" in out_point.keys():
-                # 获取父节点（分辨率更高/未稀疏化的点）
-                parent = out_point.pop("pooling_parent")
-                # 获取映射索引
-                inverse = out_point.pop("pooling_inverse")
-                # 将当前特征广播回父节点
-                # 注意：这里我们覆盖父节点的特征，或者拼接。对于分割任务，通常是直接赋值回去。
-                # 但由于 out_point.feat 已经是处理过的特征，我们希望把它传回去。
-                # 这里假设 dim=-1 是特征维度。
-                # 如果 parent.feat 和 out_point.feat 维度不同（encoder vs decoder），直接用 out_point 的
-                parent.feat = out_point.feat[inverse]
-                out_point = parent
-            
-            # 循环结束后，out_point 变回了最初的 point (即我们创建的那个)
-            # 此时 out_point.feat 已经是对齐原始输入的了
-            sem_feat_original = out_point.feat
-        else:
-            # 如果 backbone 没返回 Point，说明它没做稀疏化（对于 PTv3 不太可能）
-            sem_feat_original = out_point
-
         # -----------------------------------------------------------
-        # C. Feature Assembly for JAFAR
+        # C. Feature Assembly for JAFAR (Lean 12-Dim)
         # -----------------------------------------------------------
-        # 此时 sem_feat_original 的形状一定是 (Total_N, C)，且顺序与 flat_coord 一致
-        # 可以安全地 reshape
-        sem_feat_dense = sem_feat_original.view(B_size, self.num_points, -1)
-        
-        # Aux Head 也使用对齐后的特征
-        aux_logits = self.aux_head(sem_feat_original) 
+        sem_feat_dense = sem_feat_sparse.view(B_size, self.num_points, -1)
         
         # 1. GBlobs (9-dim)
         geo_blobs = compute_lean_gblobs(j_coord, k=16) 

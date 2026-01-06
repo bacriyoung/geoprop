@@ -6,37 +6,24 @@ from concurrent.futures import ProcessPoolExecutor
 
 # ================= Configuration =================
 DATA_ROOT = 'data/s3dis'
-NUM_TRIALS = 800
+NUM_TRIALS = 2000
 LABELED_RATIO = 0.001
 NUM_CLASSES = 13
 # =================================================
 
 def load_all_data(data_root):
-    # 🔴 [修正] 读取所有训练区域 (Area 1,2,3,4,6)，仅排除验证集 Area 5
-    print(f"Loading ALL training data from {data_root} (excluding Area 5)...")
-    
-    # 搜索所有 .npy 文件
+    # 只读 Area 1 & 2 加速
+    print(f"Loading data from {data_root} (Area 1/2)...")
     files = glob.glob(os.path.join(data_root, "**", "coord.npy"), recursive=True)
     room_list = []
-    
     for f in tqdm(files):
-        # 1. 严格排除验证集 (Area 5)
-        if "Area_5" in f: 
-            continue
-            
-        # 2. 🔴 [删除] 删掉这行只读 Area 1/2 的代码
-        # if "Area_1" not in f and "Area_2" not in f: continue 
-        
+        if "Area_5" in f: continue
+        if "Area_1" not in f and "Area_2" not in f: continue
         try:
-            # 读取数据
             coord = np.load(f).astype(np.float32)
             segment = np.load(f.replace("coord.npy", "segment.npy")).astype(np.int64).reshape(-1)
             room_list.append((coord, segment))
-        except Exception as e: 
-            print(f"Error loading {f}: {e}")
-            pass
-            
-    print(f"✅ Total rooms loaded: {len(room_list)}")
+        except: pass
     return room_list
 
 def evaluate_seed(args):
