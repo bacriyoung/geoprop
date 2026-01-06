@@ -30,9 +30,9 @@ train:
     enabled: true
     jitter_sigma: 0.001
     jitter_clip: 0.005
-    rotate: true      # Random rotation around Z-axis
-    scale: true       # Random scaling [0.8, 1.2]
-    flip: true        # Random flipping (X/Y)
+    rotate: false      # Random rotation around Z-axis
+    scale: false       # Random scaling [0.8, 1.2]
+    flip: false        # Random flipping (X/Y)
 
   loss_weights:
     boundary: 0.3
@@ -46,7 +46,7 @@ model:
   qk_dim: 128
   k_neighbors: 32
   # [V3.0 Feature]
-  input_mode: "gblobs" #absolute or gblobs
+  input_mode: "mix" # Options: absolute, gblobs, or mix
 
 inference:
   enable: true
@@ -54,7 +54,7 @@ inference:
   save_img: true
   save_npy: true
   vis_downsample: 60000
-  ablation_mode: false
+  ablation_mode: true
 
   direct_inference:
     save_output: true
@@ -63,7 +63,7 @@ inference:
     enabled: true
     rounds: 5
     jitter: 0.005 
-    aggressive: true # [V3.1 Update] Enable rotation voting (0, 90, 180, 270)
+    aggressive: false # [V3.1 Update] Enable rotation voting (0, 90, 180, 270)
     save_output: true
 
   confidence_filter:

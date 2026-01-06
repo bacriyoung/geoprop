@@ -92,6 +92,10 @@ def process_room_full_pipeline(cfg, model, data, return_all=False):
                         elif input_mode == "gblobs":
                             geo, col = compute_dual_gblobs(b_xyz, b_rgb, k=32)
                             feat = torch.cat([geo, col], dim=1)
+                        elif input_mode == "mix":
+                            # Use Geometric GBlobs (9 dims) + Raw RGB (3 dims)
+                            geo, _ = compute_dual_gblobs(b_xyz, b_rgb, k=32)
+                            feat = torch.cat([geo, b_rgb], dim=1)
                         
                         feat_seeds = feat[:, :, rel_seed_idx]
                         

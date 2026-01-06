@@ -71,8 +71,12 @@ def prepare_features(xyz, rgb, input_mode):
     elif input_mode == "gblobs":
         geo, col = compute_dual_gblobs(xyz, rgb, k=32)
         return torch.cat([geo, col], dim=1) 
+    elif input_mode == "mix":
+        # Compute only geometric gblobs (9 dims) and concatenate with raw RGB (3 dims)
+        geo, _ = compute_dual_gblobs(xyz, rgb, k=32)
+        return torch.cat([geo, rgb], dim=1)
     else:
-        raise ValueError("Unknown input_mode")
+        raise ValueError(f"Unknown input_mode: {input_mode}")
 
 def get_seeds(xyz, seed_mask, mode_fixed, label_ratio):
     B, _, N = xyz.shape

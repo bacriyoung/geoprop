@@ -11,7 +11,10 @@ class DecoupledPointJAFAR(nn.Module):
         if input_mode == 'absolute':
             self.input_geo_dim = 6  
         elif input_mode == 'gblobs':
-            self.input_geo_dim = 18 
+            self.input_geo_dim = 18
+        elif input_mode == 'mix':
+            # 9 dims from Geometric GBlobs + 3 dims from RGB = 12 dims
+            self.input_geo_dim = 12
         else:
             raise ValueError(f"Unknown input_mode: {input_mode}")
 
