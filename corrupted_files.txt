@@ -1,3 +1,0 @@
-/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train/cambridge_block_0.ply
-/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train/cambridge_block_1.ply
-/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train/cambridge_block_34.ply
