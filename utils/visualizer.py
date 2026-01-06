@@ -8,7 +8,11 @@ import matplotlib.gridspec as gridspec
 # Ensure headless generation
 matplotlib.use('Agg')
 
-# S3DIS Color Palette
+# ==============================================================================
+# Color Palettes & Class Names Definitions
+# ==============================================================================
+
+# S3DIS (Indoor)
 S3DIS_COLORS = np.array([
     [0, 255, 0],     # Ceiling
     [0, 0, 255],     # Floor
@@ -25,16 +29,52 @@ S3DIS_COLORS = np.array([
     [50, 50, 50]     # Clutter
 ]) / 255.0
 
-CLASS_NAMES = [
+S3DIS_CLASSES = [
     'Ceiling', 'Floor', 'Wall', 'Beam', 'Column', 'Window', 'Door', 
     'Table', 'Chair', 'Sofa', 'Bookcase', 'Board', 'Clutter'
 ]
 
-def generate_viz(xyz, lbls_dict, gt, name, output_dir, sample_n=60000, point_size=20.0):
+# SensatUrban (Outdoor)
+# Colors adapted for urban parsing (High contrast)
+SENSAT_COLORS = np.array([
+    [85, 107, 47],    # 0: Ground (DarkOliveGreen)
+    [0, 255, 0],      # 1: Vegetation (Lime)
+    [255, 165, 0],    # 2: Building (Orange)
+    [47, 79, 79],     # 3: Wall (DarkSlateGray)
+    [123, 104, 238],  # 4: Bridge (MediumSlateBlue)
+    [128, 0, 128],    # 5: Parking (Purple)
+    [255, 0, 255],    # 6: Rail (Magenta)
+    [128, 128, 128],  # 7: Traffic Road (Gray)
+    [255, 255, 0],    # 8: Street Furniture (Yellow)
+    [255, 0, 0],      # 9: Car (Red)
+    [0, 255, 255],    # 10: Footpath (Cyan)
+    [0, 128, 128],    # 11: Bike (Teal)
+    [0, 0, 255]       # 12: Water (Blue)
+]) / 255.0
+
+SENSAT_CLASSES = [
+    "Ground", "Vegetation", "Building", "Wall", "Bridge", "Parking", 
+    "Rail", "Traffic Road", "Street Furn.", "Car", "Footpath", "Bike", "Water"
+]
+
+def get_meta(dataset_name):
+    """Retrieve colors and class names by dataset name."""
+    name = dataset_name.lower()
+    if 's3dis' in name:
+        return S3DIS_COLORS, S3DIS_CLASSES
+    elif 'sensat' in name:
+        return SENSAT_COLORS, SENSAT_CLASSES
+    else:
+        # Fallback to S3DIS if unknown
+        return S3DIS_COLORS, S3DIS_CLASSES
+
+def generate_viz(xyz, lbls_dict, gt, name, output_dir, dataset_name='s3dis', sample_n=60000, point_size=20.0):
     """
-    Generate 3-View Visualization using GridSpec (Original Repository Style).
-    Fixed: Adjusted margins to prevent legend overlap.
+    Generate 3-View Visualization dynamically based on dataset.
     """
+    # Load correct palette
+    colors_palette, class_names = get_meta(dataset_name)
+    
     # Downsample for performance
     if len(xyz) > sample_n:
         rng = np.random.default_rng(42)
@@ -47,9 +87,10 @@ def generate_viz(xyz, lbls_dict, gt, name, output_dir, sample_n=60000, point_siz
 
     def get_c(l):
         c = np.zeros((len(l), 3))
-        mask = l != -100
-        c[mask] = S3DIS_COLORS[l[mask].astype(int)]
-        c[~mask] = [0.8, 0.8, 0.8] # Grey for unlabeled
+        # Handle -100 (ignore label)
+        mask = (l >= 0) & (l < len(colors_palette))
+        c[mask] = colors_palette[l[mask].astype(int)]
+        c[~mask] = [0.8, 0.8, 0.8] # Grey for unlabeled/ignored
         return c
 
     # Prepare stages to plot
@@ -59,7 +100,6 @@ def generate_viz(xyz, lbls_dict, gt, name, output_dir, sample_n=60000, point_siz
     # Setup Figure
     fig = plt.figure(figsize=(24, 5 * num_rows))
     
-    # [FIX] Increased bottom margin from 0.05 to 0.12 to accommodate the legend
     gs = gridspec.GridSpec(num_rows, 3, figure=fig, 
                            top=0.98, bottom=0.12, 
                            left=0.10, right=0.98, 
@@ -80,16 +120,16 @@ def generate_viz(xyz, lbls_dict, gt, name, output_dir, sample_n=60000, point_siz
             ax.scatter(p_xyz[:,dims[0]], p_xyz[:,dims[1]], c=c, s=point_size, edgecolors='none', alpha=0.8)
             ax.axis('off')
             
-            # Add stage name label on the left of the first column
+            # Add stage name label
             if c_idx == 0:
                 ax.text(-0.10, 0.5, stage_name, transform=ax.transAxes, 
                         va='center', ha='right', fontsize=18, rotation=90, fontweight='bold')
 
-    # Create Legend
-    patches = [mpatches.Patch(color=S3DIS_COLORS[i], label=CLASS_NAMES[i]) for i in range(len(CLASS_NAMES))]
+    # Create Legend Dynamically
+    patches = [mpatches.Patch(color=colors_palette[i], label=class_names[i]) for i in range(len(class_names))]
     
-    # Legend placement: Lower center, in the reserved bottom margin
-    fig.legend(handles=patches, loc='lower center', ncol=7, fontsize=16, 
+    # Legend placement
+    fig.legend(handles=patches, loc='lower center', ncol=min(7, len(class_names)), fontsize=14, 
                bbox_to_anchor=(0.5, 0.02), frameon=False)
     
     # Save

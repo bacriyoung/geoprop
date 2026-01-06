@@ -1,0 +1,3 @@
+/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train/cambridge_block_0.ply	[TRUNCATED] cambridge_block_0.ply: 文件截断/损坏 -> element 'vertex': row 264178: early end-of-file
+/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train/cambridge_block_1.ply	[TRUNCATED] cambridge_block_1.ply: 文件截断/损坏 -> element 'vertex': row 200690: early end-of-file
+/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train/cambridge_block_34.ply	[TRUNCATED] cambridge_block_34.ply: 文件截断/损坏 -> element 'vertex': row 2389491: early end-of-file

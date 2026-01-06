@@ -7,7 +7,7 @@ import os
 import logging
 import numpy as np
 
-from geoprop.data.s3dis.s3dis_dataset import S3DISDataset 
+from geoprop.data import build_dataset
 from geoprop.models.point_jafar import DecoupledPointJAFAR
 from geoprop.utils.metrics import IoUCalculator
 from geoprop.core.inferencer import validate_full_scene_logic 
@@ -148,8 +148,10 @@ def run_training(cfg, save_path):
     logger = logging.getLogger("geoprop")
     logger.info(">>> [Phase 1] Training V3.0 (Compatible)...")
     
-    train_ds = S3DISDataset(cfg, split='train')
-    val_ds = S3DISDataset(cfg, split='val')
+    # [FIX] Use factory instead of hardcoded S3DISDataset
+    train_ds = build_dataset(cfg, split='train')
+    val_ds = build_dataset(cfg, split='val')
+    
     train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True, num_workers=8, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=cfg['train']['batch_size'], shuffle=False, num_workers=4)
     
@@ -167,19 +169,17 @@ def run_training(cfg, save_path):
     best_miou = 0.0
     val_mode = cfg['train'].get('val_mode', 'block_proxy')
     
-    # [FIX] Define configuration variables explicitly
     input_mode = cfg['model']['input_mode']
     fixed_train = cfg['train']['seed_mode']['train']
     use_dyn_w = cfg['train']['use_dynamic_weights']
     label_ratio = train_ds.label_ratio
     
-    # [FIX] Get num_classes from config (Crucial Fix for NameError)
-    # Tries to get from dataset config, defaults to 13
     num_classes = cfg['dataset'].get('num_classes', 13)
 
     all_files = []
     if val_mode == 'full_scene':
-        inf_ds = S3DISDataset(cfg, split='inference')
+        # [FIX] Use factory here too
+        inf_ds = build_dataset(cfg, split='inference')
         all_files = inf_ds.files
 
     for ep in range(cfg['train']['epochs']):

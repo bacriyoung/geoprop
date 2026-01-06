@@ -1,0 +1,22 @@
+# ==============================================================================
+# SensatUrban Specific Configuration
+# ==============================================================================
+
+dataset:
+  name: "sensaturban"
+  # Update this path to your actual SensatUrban location
+  root_dir: "/home/work/research/geoprop/datasets/SensatUrban/SensatUrban_Dataset/ply/train2"
+  
+  num_classes: 13
+  
+  # Urban scenes usually require more points per block due to scale
+  num_points: 65536 
+  block_size: 4.0   
+  label_ratio: 0.001
+
+  split:
+    # SensatUrban usually splits by folder structure, so these keys are optional
+    # but kept for compatibility with the factory logic.
+    train: [] 
+    val: []
+    test: []

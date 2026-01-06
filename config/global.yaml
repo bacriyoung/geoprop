@@ -6,12 +6,12 @@ project:
   name: "geoprop_v3_stable"
   seed: 42
   device: "cuda"
-  target_dataset: "s3dis" # Links to config/s3dis/s3dis.yaml
+  target_dataset: "sensaturban" # Links to config/s3dis/s3dis.yaml
 
 train:
   enable: true
-  epochs: 50
-  batch_size: 8
+  epochs: 1
+  batch_size: 2
   learning_rate: 0.001
   weight_decay: 0.0001
   
@@ -38,7 +38,7 @@ train:
     boundary: 0.3
 
 dataset:
-  name: "s3dis"
+  name: "sensaturban"
   num_workers: 4
   # [Clean] label_ratio removed from here. It is fetched from s3dis.yaml by main.py
 
@@ -50,7 +50,7 @@ model:
 
 inference:
   enable: true
-  checkpoint_path: "/home/work/research/geoprop/outputs/s3dis/20260102_113104_GBL_TR-Rnd-Fix_INF-Prod/last_model.pth" 
+  checkpoint_path: "/home/work/research/geoprop/outputs/sensaturban/20260106_171549_MIX_TR-Rnd-Rnd_INF-Abl/last_model.pth" 
   save_img: true
   save_npy: true
   vis_downsample: 60000
