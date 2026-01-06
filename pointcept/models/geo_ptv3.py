@@ -6,6 +6,7 @@ import inspect
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
+from pointcept.models.utils.structure import Point
 
 # =========================================================================
 # 0. GBlobs Calculation Utilities
@@ -247,7 +248,6 @@ class GeoPTV3(nn.Module):
         ptv3_input["feat"] = flat_feat
         
         # Input Channel Adaptation
-        # If PTv3 expects 6 channels (RGB+XYZ) but 'feat' is 3 (RGB), append coords.
         if self.ptv3_in_channels == 6 and flat_feat.shape[1] == 3:
             ptv3_input["feat"] = torch.cat([flat_feat, flat_coord], dim=1)
         
@@ -257,15 +257,42 @@ class GeoPTV3(nn.Module):
             ptv3_input["grid_coord"] = flat_grid
 
         # -----------------------------------------------------------
-        # B. Stage I: PTv3 Forward
+        # B. Stage I: PTv3 Forward (With Order Correction)
         # -----------------------------------------------------------
-        sem_feat_sparse = self.sem_stream(ptv3_input).feat 
-        aux_logits = self.aux_head(sem_feat_sparse) 
+        # 🔴 [FIX 1] 显式构建 Point 对象
+        point = Point(ptv3_input)
+        
+        # 🔴 [FIX 2] 传入 Point 对象给 PTv3
+        # PTv3 会在内部对 point 进行 serialization (排序) 和 sparsify (稀疏化)
+        # 它会原地修改 point 对象，或者返回一个新的 point 对象（包含 inverse 索引）
+        out_point = self.sem_stream(point)
+        
+        # 🔴 [FIX 3] 特征对齐：从“稀疏乱序”还原回“稠密正序”
+        # out_point.feat 是乱序的 (Hilbert Order)
+        sem_feat_raw = out_point.feat
+        
+        # 步骤 A: 反体素化 (Un-sparsify) - 如果发生了特征合并
+        if out_point.sparse:
+            # inverse 映射：稀疏点 -> 稠密点 (但依然是乱序的)
+            sem_feat_dense_sorted = sem_feat_raw[out_point.inverse]
+        else:
+            sem_feat_dense_sorted = sem_feat_raw
+            
+        # 步骤 B: 反序列化 (Un-serialize) - 还原回原始输入顺序
+        # serialized_inverse 映射：乱序点 -> 原始顺序点
+        # 注意：这里必须使用输入时的 point 对象中的索引
+        sem_feat_original = sem_feat_dense_sorted[point.serialized_inverse]
+        
+        # 现在 sem_feat_original 的顺序和 input_dict['coord'] 完全一致了
         
         # -----------------------------------------------------------
         # C. Feature Assembly for JAFAR (Lean 12-Dim)
         # -----------------------------------------------------------
-        sem_feat_dense = sem_feat_sparse.view(B_size, self.num_points, -1)
+        # 安全地 Reshape
+        sem_feat_dense = sem_feat_original.view(B_size, self.num_points, -1)
+        
+        # Aux Head 也使用对齐后的特征，确保 Loss 计算正确
+        aux_logits = self.aux_head(sem_feat_original) 
         
         # 1. GBlobs (9-dim)
         geo_blobs = compute_lean_gblobs(j_coord, k=16) 
