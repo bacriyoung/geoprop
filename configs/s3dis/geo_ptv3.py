@@ -85,12 +85,11 @@ model = dict(
 # LR Strategy: Backbone slow (0.1x), Head fast (1x)
 # This prevents PointJAFAR noise from ruining Backbone features early on.
 lr = 0.001 
+clip_grad = 10.0
 optimizer = dict(
     type="AdamW", 
     lr=lr, 
     weight_decay=0.05,
-    # [FIX] Add Gradient Clipping
-    grad_clip=dict(max_norm=10.0) 
 )
 
 scheduler = dict(

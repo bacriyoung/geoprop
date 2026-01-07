@@ -6,7 +6,6 @@ import inspect
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
-import pointcept.utils.comm as comm
 
 # =========================================================================
 # 0. GBlobs Calculation Utilities (Optimized)
@@ -224,9 +223,8 @@ class GeoPTV3(nn.Module):
             self.criteria = None
 
     def update_prototypes(self, features, labels):
-        """
-        Update prototypes with distributed support (all_reduce).
-        """
+        import torch.distributed as dist
+        
         with torch.no_grad():
             for c in range(self.aux_head.out_features):
                 mask = (labels == c)
@@ -234,14 +232,15 @@ class GeoPTV3(nn.Module):
                 # Calculate local sum and count
                 if mask.sum() > 0:
                     local_sum = features[mask].sum(0)
-                    local_count = torch.tensor(mask.sum(), device=features.device, dtype=torch.float32)
+                    local_count = mask.sum().float()
                 else:
                     local_sum = torch.zeros(features.shape[1], device=features.device)
                     local_count = torch.tensor(0.0, device=features.device)
                 
                 # Synchronize across all GPUs
-                comm.all_reduce(local_sum)
-                comm.all_reduce(local_count)
+                if dist.is_available() and dist.is_initialized():
+                    dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
                 
                 # Update global prototypes
                 if local_count > 0:
