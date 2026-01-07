@@ -257,7 +257,7 @@ class GeoPTV3(nn.Module):
 
     def forward(self, input_dict):
         # -----------------------------------------------------------
-        # A. PTv3 Prep
+        # A. PTv3 Prep & Batch Handling
         # -----------------------------------------------------------
         if "jafar_coord" in input_dict:
             j_coord = input_dict['jafar_coord']
@@ -268,21 +268,40 @@ class GeoPTV3(nn.Module):
             
         if j_coord.dim() == 2:
             total_points = j_coord.shape[0]
+            
             if self.training:
-                # [Training] Strict Fixed Size (Original logic)
+                # [Training] Strict Fixed Size Logic
                 if "batch" in input_dict:
                     B_size = input_dict["batch"].max().item() + 1
                 else:
                     B_size = total_points // self.num_points
+                
                 valid_len = B_size * self.num_points
                 j_coord = j_coord[:valid_len].view(B_size, self.num_points, -1)
                 j_feat_raw = j_feat_raw[:valid_len].view(B_size, self.num_points, -1)
+            
             else:
-                # [Test/Inference] Dynamic Size (No truncation)
-                B_size = 1
-                j_coord = j_coord.view(1, total_points, -1)
-                j_feat_raw = j_feat_raw.view(1, total_points, -1)
-                # Ensure batch index exists for PTv3 if missing
+                # [Test/Inference] Dynamic Size Handling
+                # Support both Test (B=1) and Validation (B>1)
+                if "batch" in input_dict:
+                    B_size = input_dict["batch"].max().item() + 1
+                else:
+                    B_size = 1
+                
+                # Attempt Reshape to [B, N, C]
+                # Only valid if total points are divisible by Batch Size
+                if total_points % B_size == 0:
+                    points_per_batch = total_points // B_size
+                    j_coord = j_coord.view(B_size, points_per_batch, -1)
+                    j_feat_raw = j_feat_raw.view(B_size, points_per_batch, -1)
+                else:
+                    # Fallback for irregular batch sizes (force B=1 to avoid crash)
+                    # Note: This might cause cross-room KNN issues if multiple rooms are packed
+                    B_size = 1
+                    j_coord = j_coord.view(1, total_points, -1)
+                    j_feat_raw = j_feat_raw.view(1, total_points, -1)
+
+                # Ensure PTv3 input has batch index
                 if "batch" not in input_dict:
                     input_dict["batch"] = torch.zeros(total_points, device=j_coord.device, dtype=torch.long)
         else:
