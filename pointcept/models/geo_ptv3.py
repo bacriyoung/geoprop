@@ -27,6 +27,11 @@ def compute_covariance_features(features, knn_indices, k=16):
     
     neighbors = feat_flat[idx_flat].view(B, N, k, C)
     
+    # [FIX] Force Float32 for Covariance Calculation
+    # In Mixed Precision (FP16), x*x often exceeds the max value (65504), resulting in Inf/NaN.
+    # Casting to float32 ensures numerical stability for geometric computations.
+    neighbors = neighbors.float() 
+    
     # Centering
     local_mean = neighbors.mean(dim=2, keepdim=True) 
     centered = neighbors - local_mean 
@@ -36,7 +41,9 @@ def compute_covariance_features(features, knn_indices, k=16):
     cov = torch.matmul(centered_t, centered) / (k - 1 + 1e-6)
     
     cov_flat = cov.view(B, N, C*C)
-    return cov_flat
+    
+    # Cast back to original dtype (e.g., float16) to save memory for subsequent layers
+    return cov_flat.to(features.dtype)
 
 def compute_lean_gblobs(xyz, k=16):
     """

@@ -35,16 +35,12 @@ class GeoCoTrainLoss(nn.Module):
         loss_main = self.ce(output_dict['refined_logits'], target)
         
         # Aux: PTv3 output (Backbone Supervision)
-        # Force PTv3 to learn robust features independently, 
-        # ensuring it doesn't rely solely on JAFAR refinement.
         loss_aux = self.ce(output_dict['aux_logits'], target)
         
         loss_sup = self.lambda_main * loss_main + self.lambda_aux * loss_aux
         
         # 2. Affinity Loss (Soft-Thresholding)
         # -----------------------------------------------------------
-        # Objective: If JAFAR predicts high affinity between points, 
-        # their Refined features must be close in embedding space.
         feat_to_constrain = output_dict['refined_feat'] # [B*N, C]
         affinity = output_dict['affinity'] # [B, N, K]
         k_idx = output_dict['k_idx']
@@ -65,10 +61,10 @@ class GeoCoTrainLoss(nn.Module):
         
         # [Strategy] Soft-Thresholding
         # Only points with affinity > 0.5 generate pull force.
-        # Higher affinity results in stronger pull force.
         aff_weight = F.relu(affinity - 0.5) 
         
         # Normalize by sum of weights to avoid scaling issues
+        # [FIX] Increased epsilon to 1e-4 to prevent division by zero in FP16
         loss_aff = torch.sum(aff_weight * feat_dist) / (aff_weight.sum() + 1e-4)
 
         # 3. Distribution Loss (Prototype Alignment)
@@ -76,8 +72,11 @@ class GeoCoTrainLoss(nn.Module):
         loss_dist = torch.tensor(0.0, device=target.device)
         if 'prototypes' in output_dict:
             prototypes = output_dict['prototypes']
-            feat_norm = F.normalize(feat_flat, p=2, dim=1)
-            prototypes_norm = F.normalize(prototypes, p=2, dim=1)
+            
+            # [FIX] Add explicit eps=1e-6 to F.normalize
+            # Standard eps (1e-12) causes NaN in FP16 if vector norm is close to zero.
+            feat_norm = F.normalize(feat_flat, p=2, dim=1, eps=1e-6)
+            prototypes_norm = F.normalize(prototypes, p=2, dim=1, eps=1e-6)
             
             # Maximize similarity between feature and its class prototype
             sim_matrix = torch.mm(feat_norm, prototypes_norm.t())
@@ -92,7 +91,6 @@ class GeoCoTrainLoss(nn.Module):
 
         # 4. Boundary Loss (Geometry Self-Supervision)
         # -----------------------------------------------------------
-        # Use the 12-dim input to determine boundaries
         feat_inp = output_dict['input_jafar_feat'] 
         feat_inp_flat = feat_inp.view(B*N, -1)
         neighbor_inp = feat_inp_flat[k_idx_flat].view(B, N, K, -1)
