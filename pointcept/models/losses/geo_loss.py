@@ -6,8 +6,8 @@ from .builder import LOSSES
 @LOSSES.register_module()
 class GeoCoTrainLoss(nn.Module):
     def __init__(self, 
-                 lambda_main=1.0,   # Renamed from lambda_sup: Weight for Refined Logits (JAFAR/Final)
-                 lambda_aux=1.0,    # Renamed from lambda_con: Weight for Aux Logits (PTv3/Backbone)
+                 lambda_main=1.0,   #  Weight for Refined Logits (JAFAR/Final)
+                 lambda_aux=1.0,    #  Weight for Aux Logits (PTv3/Backbone)
                  lambda_aff=0.1,    
                  lambda_dist=0.1,   
                  lambda_bdy=0.5,    

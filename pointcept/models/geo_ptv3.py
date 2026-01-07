@@ -286,7 +286,7 @@ class GeoPTV3(nn.Module):
         # 2. Backbone Forward
         out_point = self.sem_stream(point)
         
-        # 3. 🟢 [Insurance] Feature Restoration
+        # 3. [Insurance] Feature Restoration
         # Although experiments show PTv3 output is aligned by default, keeping this code
         # acts as insurance for future changes or specific backbone configurations.
         # If out_point is already restored, 'pooling_parent' is empty, and this block does nothing.
@@ -321,7 +321,7 @@ class GeoPTV3(nn.Module):
         
         targets = input_dict['segment'].view(-1)
         
-        # 🟢 Use DDP-Safe Update Logic
+        # Use DDP-Safe Update Logic
         if self.training:
             valid_mask = (targets != 255)
             if valid_mask.sum() > 0:

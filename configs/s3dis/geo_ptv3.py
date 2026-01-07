@@ -12,7 +12,7 @@ seed = 38345489
 # Training Parameters
 epoch_num = 100 
 batch_size = 4
-num_worker = 8 # ⬆️ Increased to 8 for faster data loading
+num_worker = 4 
 save_freq = 5
 
 # 🔴 [AMP] Enable Mixed Precision for speed and memory efficiency
@@ -50,11 +50,11 @@ model = dict(
         order=["z", "z-trans", "hilbert", "hilbert-trans"],
         stride=(2, 2, 2, 2),
         enc_depths=(2, 2, 2, 6, 2),
-        enc_channels=(32, 64, 128, 256, 512), # ✅ Aligned with official
+        enc_channels=(32, 64, 128, 256, 512), # Aligned with official
         enc_num_head=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         dec_depths=(2, 2, 2, 2),
-        dec_channels=(64, 64, 128, 256),      # ✅ Aligned with official
+        dec_channels=(64, 64, 128, 256),      # Aligned with official
         dec_num_head=(4, 4, 8, 16),
         dec_patch_size=(1024, 1024, 1024, 1024),
         mlp_ratio=4,
@@ -82,7 +82,7 @@ model = dict(
 # -------------------------------------------------------------------------
 # Optimizer & Scheduler (Hybrid Strategy)
 # -------------------------------------------------------------------------
-# 🔴 LR Strategy: Backbone slow (0.1x), Head fast (1x)
+# LR Strategy: Backbone slow (0.1x), Head fast (1x)
 # This prevents PointJAFAR noise from ruining Backbone features early on.
 lr = 0.001 # Slightly increased because param_dicts protects the backbone
 optimizer = dict(type="AdamW", lr=lr, weight_decay=0.05)
