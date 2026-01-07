@@ -6,11 +6,10 @@ import inspect
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
-from pointcept.models.utils.structure import Point
-import pointcept.utils.comm as comm  # Required for DDP synchronization
+import pointcept.utils.comm as comm
 
 # =========================================================================
-# 0. GBlobs Calculation Utilities
+# 0. GBlobs Calculation Utilities (Optimized)
 # =========================================================================
 def compute_covariance_features(features, knn_indices, k=16):
     """
@@ -19,50 +18,60 @@ def compute_covariance_features(features, knn_indices, k=16):
     knn_indices: [B, N, k]
     """
     B, N, C = features.shape
+    
+    # Create batch indices broadcasting to neighbor dimension
     batch_idx = torch.arange(B, device=features.device).view(B, 1, 1).expand(-1, N, k)
     
+    # Flatten features for gathering
     feat_flat = features.view(B*N, C)
+    
+    # Calculate flattened indices: neighbor_idx + batch_offset
     idx_flat = knn_indices.view(B, N, k) + (batch_idx * N)
     idx_flat = idx_flat.view(-1)
     
+    # Gather neighbors: [B, N, k, C]
     neighbors = feat_flat[idx_flat].view(B, N, k, C)
     
-    # [FIX] Force Float32 for Covariance Calculation
-    # In Mixed Precision (FP16), x*x often exceeds the max value (65504), resulting in Inf/NaN.
-    # Casting to float32 ensures numerical stability for geometric computations.
-    neighbors = neighbors.float() 
-    
-    # Centering
+    # Centering: subtract local mean
     local_mean = neighbors.mean(dim=2, keepdim=True) 
     centered = neighbors - local_mean 
     
     # Covariance: (X^T * X) / (k-1)
+    # Transpose for matrix multiplication: [B, N, C, k] @ [B, N, k, C] -> [B, N, C, C]
     centered_t = centered.transpose(2, 3)
     cov = torch.matmul(centered_t, centered) / (k - 1 + 1e-6)
     
+    # Flatten covariance matrix: [B, N, C*C]
     cov_flat = cov.view(B, N, C*C)
-    
-    # Cast back to original dtype (e.g., float16) to save memory for subsequent layers
-    return cov_flat.to(features.dtype)
+    return cov_flat
 
-def compute_lean_gblobs(xyz, k=16):
+def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=10.0):
     """
     Compute ONLY Geometric GBlobs (9-dim).
+    
+    Args:
+        xyz: [B, N, 3] Coordinates.
+        k: Neighbor count.
+        knn_idx: [B, N, k] Pre-computed KNN indices (local index 0..N-1).
+        scale: Scaling factor for numerical stability.
     """
     B, N, _ = xyz.shape
-    xyz_flat = xyz.view(-1, 3).contiguous()
-    offset = torch.arange(1, B + 1, dtype=torch.int32, device=xyz.device) * N
-    idx_flat = pointops.knn_query(k, xyz_flat, offset)[0].long()
     
-    batch_start = (torch.arange(B, device=xyz.device) * N).view(B, 1, 1)
-    idx = idx_flat.view(B, N, k) - batch_start
-    
-    # Scaling by 10.0 for stability
-    geo_blobs = compute_covariance_features(xyz * 10.0, idx, k)
+    # Use pre-computed KNN indices if provided to save computation
+    if knn_idx is None:
+        xyz_flat = xyz.view(-1, 3).contiguous()
+        offset = torch.arange(1, B + 1, dtype=torch.int32, device=xyz.device) * N
+        idx_flat = pointops.knn_query(k, xyz_flat, offset)[0].long()
+        batch_start = (torch.arange(B, device=xyz.device) * N).view(B, 1, 1)
+        knn_idx = idx_flat.view(B, N, k) - batch_start
+
+    # Compute covariance on SCALED coordinates for stability
+    # Note: knn_idx is valid for both scaled and unscaled xyz as relative order is preserved
+    geo_blobs = compute_covariance_features(xyz * scale, knn_idx, k)
     return geo_blobs # [B, N, 9]
 
 # =========================================================================
-# 1. DecoupledPointJAFAR (Option A: Semantic Refinement)
+# 1. DecoupledPointJAFAR (Optimized: Accepts pre-computed KNN)
 # =========================================================================
 class DecoupledPointJAFAR(nn.Module):
     def __init__(self, qk_dim=64, k=16, input_geo_dim=12, sem_dim=192, num_classes=13): 
@@ -103,15 +112,28 @@ class DecoupledPointJAFAR(nn.Module):
         self.cls_head = nn.Linear(qk_dim, num_classes)
 
     def _gather_val_efficient(self, tensor, idx):
+        """
+        Gather features using local indices.
+        tensor: [B, C, N]
+        idx: [B, N, K] (values in 0..N-1)
+        """
         B, C, N = tensor.shape
         _, _, K = idx.shape
         tensor_flat = tensor.transpose(1, 2).contiguous().view(B * N, C)
+        # Add batch offsets to convert local indices to global flattened indices
         batch_offset = torch.arange(B, device=tensor.device).view(B, 1, 1) * N
         flat_idx = (idx + batch_offset).view(-1)
         val = tensor_flat[flat_idx].view(B, N, K, C).permute(0, 3, 1, 2)
         return val
 
-    def forward(self, xyz, jafar_feat, sem_feat):
+    def forward(self, xyz, jafar_feat, sem_feat, knn_idx=None):
+        """
+        Args:
+            xyz: [B, N, 3]
+            jafar_feat: [B, N, C_geo]
+            sem_feat: [B, N, C_sem]
+            knn_idx: [B, N, k] Pre-computed KNN indices (optional)
+        """
         B, N, _ = jafar_feat.shape
         jafar_feat_t = jafar_feat.transpose(1, 2).contiguous()
         sem_feat_t = sem_feat.transpose(1, 2).contiguous()
@@ -124,17 +146,18 @@ class DecoupledPointJAFAR(nn.Module):
         K = self.geo_key(geom_emb)
         V = self.val_proj(sem_feat_t)
 
-        # 2. KNN
-        xyz_flat = xyz.view(-1, 3).contiguous()
-        offset = torch.arange(1, B + 1, dtype=torch.int32, device=xyz.device) * N
-        k_idx_flat = pointops.knn_query(self.k, xyz_flat, offset)[0].long()
-        batch_start = (torch.arange(B, device=xyz.device) * N).view(B, 1, 1)
-        k_idx = k_idx_flat.view(B, N, self.k) - batch_start
+        # 2. KNN (Compute if not provided)
+        if knn_idx is None:
+            xyz_flat = xyz.view(-1, 3).contiguous()
+            offset = torch.arange(1, B + 1, dtype=torch.int32, device=xyz.device) * N
+            k_idx_flat = pointops.knn_query(self.k, xyz_flat, offset)[0].long()
+            batch_start = (torch.arange(B, device=xyz.device) * N).view(B, 1, 1)
+            knn_idx = k_idx_flat.view(B, N, self.k) - batch_start
         
         # 3. Attention
-        K_g = self._gather_val_efficient(K, k_idx)
-        xyz_g = self._gather_val_efficient(xyz_t, k_idx)
-        V_g = self._gather_val_efficient(V, k_idx)
+        K_g = self._gather_val_efficient(K, knn_idx)
+        xyz_g = self._gather_val_efficient(xyz_t, knn_idx)
+        V_g = self._gather_val_efficient(V, knn_idx)
         
         rel_pos = xyz_t.unsqueeze(-1) - xyz_g
         pos_enc = self.rel_pos_mlp(rel_pos)
@@ -149,10 +172,10 @@ class DecoupledPointJAFAR(nn.Module):
         refined_feat_flat = refined_feat.transpose(1, 2).contiguous().view(-1, self.qk_dim)
         logits = self.cls_head(refined_feat_flat)
         
-        return logits, affinity, k_idx, refined_feat_flat, bdy_logits
+        return logits, affinity, knn_idx, refined_feat_flat, bdy_logits
 
 # =========================================================================
-# 2. GeoPTV3 Main Model
+# 2. GeoPTV3 Main Model (Optimized)
 # =========================================================================
 @MODELS.register_module()
 class GeoPTV3(nn.Module):
@@ -160,7 +183,8 @@ class GeoPTV3(nn.Module):
                  backbone_ptv3_cfg, 
                  geo_input_dim=6, 
                  num_classes=13,
-                 num_points=80000, 
+                 num_points=80000,
+                 geo_scale=10.0,  # Parameterized scaling factor
                  criteria=None):
         super().__init__()
         
@@ -169,17 +193,18 @@ class GeoPTV3(nn.Module):
         clean_cfg = {k: v for k, v in backbone_ptv3_cfg.items() if k in valid_params}
         self.sem_stream = PointTransformerV3(**clean_cfg)
         
-        # [Fix] Read from config dictionary instead of object attribute
         self.ptv3_in_channels = backbone_ptv3_cfg.get("in_channels", 6)
         
         dec_channels = backbone_ptv3_cfg.get('dec_channels', [48, 96, 192, 384])
         self.sem_feat_dim = dec_channels[0]
         self.aux_head = nn.Linear(self.sem_feat_dim, num_classes)
         
-        # 2. Geometric Stream: JAFAR (Lean Mode: 12 dim)
+        # 2. Geometric Stream: JAFAR
         self.num_points = num_points
         self.real_geo_dim = 12 
+        self.geo_scale = geo_scale # Store scale factor
         print(f"🚀 [GeoPTV3] Lean Mode: JAFAR Input Dim = {self.real_geo_dim} (9 GeoGBlobs + 3 RGB)")
+        print(f"🚀 [GeoPTV3] Geometry Scale Factor = {self.geo_scale}")
         
         self.geo_stream = DecoupledPointJAFAR(
             qk_dim=64, 
@@ -200,32 +225,29 @@ class GeoPTV3(nn.Module):
 
     def update_prototypes(self, features, labels):
         """
-        DDP-Safe Prototype Update Logic.
+        Update prototypes with distributed support (all_reduce).
         """
-        # 1. Compute local sum and count
-        local_proto_sum = torch.zeros_like(self.prototypes)
-        local_proto_count = torch.zeros_like(self.proto_count)
-        
-        for c in range(self.aux_head.out_features):
-            mask = (labels == c)
-            if mask.sum() > 0:
-                local_proto_sum[c] = features[mask].sum(0)
-                local_proto_count[c] = mask.sum()
-
-        # 2. [FIX] Synchronize across GPUs (AllReduce)
-        # Without this, each GPU maintains divergent prototypes, causing loss noise.
-        comm.all_reduce(local_proto_sum)
-        comm.all_reduce(local_proto_count)
-
-        # 3. Update Buffer with Momentum
         with torch.no_grad():
             for c in range(self.aux_head.out_features):
-                if local_proto_count[c] > 0:
-                    # Compute global mean
-                    global_mean = local_proto_sum[c] / local_proto_count[c]
-                    # Momentum update
+                mask = (labels == c)
+                
+                # Calculate local sum and count
+                if mask.sum() > 0:
+                    local_sum = features[mask].sum(0)
+                    local_count = torch.tensor(mask.sum(), device=features.device, dtype=torch.float32)
+                else:
+                    local_sum = torch.zeros(features.shape[1], device=features.device)
+                    local_count = torch.tensor(0.0, device=features.device)
+                
+                # Synchronize across all GPUs
+                comm.all_reduce(local_sum)
+                comm.all_reduce(local_count)
+                
+                # Update global prototypes
+                if local_count > 0:
+                    global_mean = local_sum / local_count
                     self.prototypes[c] = self.momentum * self.prototypes[c] + (1 - self.momentum) * global_mean
-                    self.proto_count[c] += local_proto_count[c]
+                    self.proto_count[c] += 1
 
     def forward(self, input_dict):
         # -----------------------------------------------------------
@@ -255,7 +277,7 @@ class GeoPTV3(nn.Module):
         raw_feat = input_dict.get("ptv3_feat", input_dict.get("feat"))
         raw_grid = input_dict.get("grid_coord")
         
-        # 1. Flatten for PTv3
+        # Flatten for PTv3
         if raw_coord.dim() == 3: 
             flat_coord = raw_coord.reshape(-1, 3).contiguous()
             flat_feat = raw_feat.reshape(-1, raw_feat.shape[-1]).contiguous()
@@ -275,7 +297,6 @@ class GeoPTV3(nn.Module):
         ptv3_input["coord"] = flat_coord
         ptv3_input["feat"] = flat_feat
         
-        # Input Channel Adaptation
         if self.ptv3_in_channels == 6 and flat_feat.shape[1] == 3:
             ptv3_input["feat"] = torch.cat([flat_feat, flat_coord], dim=1)
         
@@ -285,50 +306,52 @@ class GeoPTV3(nn.Module):
             ptv3_input["grid_coord"] = flat_grid
 
         # -----------------------------------------------------------
-        # B. Stage I: PTv3 Forward (Safe Version)
+        # B. Stage I: PTv3 Forward (Optimized: No Restore needed)
         # -----------------------------------------------------------
-        # 1. Construct Point object (for compatibility with restoration logic)
-        point = Point(ptv3_input)
+        sem_feat_sparse = self.sem_stream(ptv3_input).feat 
+        aux_logits = self.aux_head(sem_feat_sparse) 
         
-        # 2. Backbone Forward
-        out_point = self.sem_stream(point)
-        
-        # 3. [Insurance] Feature Restoration
-        # Although experiments show PTv3 output is aligned by default, keeping this code
-        # acts as insurance for future changes or specific backbone configurations.
-        # If out_point is already restored, 'pooling_parent' is empty, and this block does nothing.
-        if isinstance(out_point, Point):
-            while "pooling_parent" in out_point.keys():
-                parent = out_point.pop("pooling_parent")
-                inverse = out_point.pop("pooling_inverse")
-                parent.feat = out_point.feat[inverse]
-                out_point = parent
-            sem_feat_original = out_point.feat
-        else:
-            sem_feat_original = out_point
-
         # -----------------------------------------------------------
-        # C. Feature Assembly
+        # C. Feature Assembly (Shared KNN Optimization)
         # -----------------------------------------------------------
-        sem_feat_dense = sem_feat_original.view(B_size, self.num_points, -1)
-        aux_logits = self.aux_head(sem_feat_original) 
+        sem_feat_dense = sem_feat_sparse.view(B_size, self.num_points, -1)
         
-        geo_blobs = compute_lean_gblobs(j_coord, k=16) 
+        # [Optimization] Compute KNN once and reuse
+        # 1. Compute KNN indices for j_coord (raw dense coordinates)
+        # Note: pointops.knn_query requires flattened input and offset
+        j_coord_flat = j_coord.view(-1, 3).contiguous()
+        j_offset = torch.arange(1, B_size + 1, dtype=torch.int32, device=j_coord.device) * self.num_points
+        
+        # Use k=16 (default)
+        k_neighbors = 16
+        idx_flat = pointops.knn_query(k_neighbors, j_coord_flat, j_offset)[0].long()
+        
+        # Convert to local indices [B, N, k] for reuse in modules
+        batch_start = (torch.arange(B_size, device=j_coord.device) * self.num_points).view(B_size, 1, 1)
+        shared_knn_idx = idx_flat.view(B_size, self.num_points, k_neighbors) - batch_start
+        
+        # 2. Compute GBlobs (Reusing shared_knn_idx)
+        geo_blobs = compute_lean_gblobs(j_coord, k=k_neighbors, knn_idx=shared_knn_idx, scale=self.geo_scale) 
+        
+        # 3. Concatenate Features
         rgb_feat = j_feat_raw[:, :, :3]
         jafar_input = torch.cat([geo_blobs, rgb_feat], dim=-1)
         
         # -----------------------------------------------------------
-        # D. Refinement
+        # D. PointJAFAR Refinement (Reusing shared_knn_idx)
         # -----------------------------------------------------------
         refined_logits, affinity, k_idx, refined_feat, bdy_logits = self.geo_stream(
             xyz=j_coord,
             jafar_feat=jafar_input,
-            sem_feat=sem_feat_dense
+            sem_feat=sem_feat_dense,
+            knn_idx=shared_knn_idx # Pass pre-computed KNN
         )
         
+        # -----------------------------------------------------------
+        # E. Outputs
+        # -----------------------------------------------------------
         targets = input_dict['segment'].view(-1)
         
-        # Use DDP-Safe Update Logic
         if self.training:
             valid_mask = (targets != 255)
             if valid_mask.sum() > 0:
