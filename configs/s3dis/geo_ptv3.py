@@ -11,14 +11,16 @@ seed = 38345489
 
 # Training Parameters
 epoch_num = 100 
+epoch = epoch_num       # Map epoch_num to engine's expected key 'epoch'
+eval_epoch = epoch_num  # Map epoch_num to engine's expected key 'eval_epoch'
 batch_size = 4
 num_worker = 4 
-save_freq = 5
+save_freq = None
 
-# 🔴 [AMP] Enable Mixed Precision for speed and memory efficiency
+#  [AMP] Enable Mixed Precision for speed and memory efficiency
 enable_amp = True 
 empty_cache = False
-mix_prob = 0.0 # 🔴 [Critical] Must disable Mix3D for weak supervision, otherwise geometric stream fails
+mix_prob = 0.0 #  [Critical] Must disable Mix3D for weak supervision, otherwise geometric stream fails
 
 # Dataset Parameters
 num_classes = 13 
@@ -137,6 +139,48 @@ data = dict(
         transform=None,
         loop=1, 
     ),
+    test=dict(
+        type="S3DISDataset",
+        split="Area_5",  # Official standard test split. Change to "val" if your data requires it.
+        data_root="data/s3dis/s3dis",
+        transform=[
+            dict(type="CenterShift", apply_z=True),
+            dict(type="NormalizeColor"),
+        ],
+        test_mode=True,
+        test_cfg=dict(
+            voxelize=dict(
+                type="GridSample",
+                grid_size=0.02, # This replaces the 'voxel_size' param that caused the error
+                hash_type="fnv",
+                mode="test",
+                return_grid_coord=True,
+            ),
+            crop=None,
+            post_transform=[
+                dict(type="CenterShift", apply_z=False),
+                dict(type="ToTensor"),
+                dict(
+                    type="Collect",
+                    keys=("coord", "grid_coord", "index"),
+                    feat_keys=("color", "normal"),
+                ),
+            ],
+            # Test Time Augmentation (TTA) from Official Config
+            aug_transform=[
+                [dict(type="RandomScale", scale=[0.9, 0.9])],
+                [dict(type="RandomScale", scale=[0.95, 0.95])],
+                [dict(type="RandomScale", scale=[1, 1])],
+                [dict(type="RandomScale", scale=[1.05, 1.05])],
+                [dict(type="RandomScale", scale=[1.1, 1.1])],
+                [dict(type="RandomScale", scale=[0.9, 0.9]), dict(type="RandomFlip", p=1)],
+                [dict(type="RandomScale", scale=[0.95, 0.95]), dict(type="RandomFlip", p=1)],
+                [dict(type="RandomScale", scale=[1, 1]), dict(type="RandomFlip", p=1)],
+                [dict(type="RandomScale", scale=[1.05, 1.05]), dict(type="RandomFlip", p=1)],
+                [dict(type="RandomScale", scale=[1.1, 1.1]), dict(type="RandomFlip", p=1)],
+            ],
+        ),
+    ),
 )
 
 # -------------------------------------------------------------------------
@@ -144,8 +188,10 @@ data = dict(
 # -------------------------------------------------------------------------
 hooks = [
     dict(type="CheckpointLoader"),
+    dict(type="ModelHook"),
     dict(type="IterationTimer", warmup_iter=100),
     dict(type="InformationWriter"),
     dict(type="SemSegEvaluator"),
     dict(type="CheckpointSaver", save_freq=save_freq),
+    dict(type="PreciseEvaluator", test_last=False),
 ]

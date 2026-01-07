@@ -180,10 +180,10 @@ class DecoupledPointJAFAR(nn.Module):
 class GeoPTV3(nn.Module):
     def __init__(self, 
                  backbone_ptv3_cfg, 
-                 geo_input_dim=6, 
+                 geo_input_dim=6,  # e.g., 6 for XYZ+RGB, 4 for XYZ+Density
                  num_classes=13,
                  num_points=80000,
-                 geo_scale=10.0,  # Parameterized scaling factor
+                 geo_scale=10.0, 
                  criteria=None):
         super().__init__()
         
@@ -200,15 +200,22 @@ class GeoPTV3(nn.Module):
         
         # 2. Geometric Stream: JAFAR
         self.num_points = num_points
-        self.real_geo_dim = 12 
-        self.geo_scale = geo_scale # Store scale factor
-        print(f"🚀 [GeoPTV3] Lean Mode: JAFAR Input Dim = {self.real_geo_dim} (9 GeoGBlobs + 3 RGB)")
-        print(f"🚀 [GeoPTV3] Geometry Scale Factor = {self.geo_scale}")
+        self.geo_scale = geo_scale 
+        
+        # Dynamic Dimension Logic:
+        # Base Geometry: XYZ -> GBlobs (9 dims)
+        # Extra Features: Input Dim - 3 (XYZ) -> Extra Feats (e.g., RGB=3, Density=1)
+        self.extra_feat_dim = max(0, geo_input_dim - 3)
+        self.real_geo_dim = 9 + self.extra_feat_dim
+        
+        print(f"[GeoPTV3] Lean Mode: JAFAR Input Dim = {self.real_geo_dim} "
+              f"(9 GeoGBlobs + {self.extra_feat_dim} Extra Feats)")
+        print(f"[GeoPTV3] Geometry Scale Factor = {self.geo_scale}")
         
         self.geo_stream = DecoupledPointJAFAR(
             qk_dim=64, 
             k=16, 
-            input_geo_dim=self.real_geo_dim, 
+            input_geo_dim=self.real_geo_dim, # Pass the dynamic dimension
             sem_dim=self.sem_feat_dim, 
             num_classes=num_classes
         )
@@ -261,13 +268,23 @@ class GeoPTV3(nn.Module):
             
         if j_coord.dim() == 2:
             total_points = j_coord.shape[0]
-            if "batch" in input_dict:
-                B_size = input_dict["batch"].max().item() + 1
+            if self.training:
+                # [Training] Strict Fixed Size (Original logic)
+                if "batch" in input_dict:
+                    B_size = input_dict["batch"].max().item() + 1
+                else:
+                    B_size = total_points // self.num_points
+                valid_len = B_size * self.num_points
+                j_coord = j_coord[:valid_len].view(B_size, self.num_points, -1)
+                j_feat_raw = j_feat_raw[:valid_len].view(B_size, self.num_points, -1)
             else:
-                B_size = total_points // self.num_points
-            valid_len = B_size * self.num_points
-            j_coord = j_coord[:valid_len].view(B_size, self.num_points, -1)
-            j_feat_raw = j_feat_raw[:valid_len].view(B_size, self.num_points, -1)
+                # [Test/Inference] Dynamic Size (No truncation)
+                B_size = 1
+                j_coord = j_coord.view(1, total_points, -1)
+                j_feat_raw = j_feat_raw.view(1, total_points, -1)
+                # Ensure batch index exists for PTv3 if missing
+                if "batch" not in input_dict:
+                    input_dict["batch"] = torch.zeros(total_points, device=j_coord.device, dtype=torch.long)
         else:
             B_size = j_coord.shape[0]
 
@@ -291,7 +308,10 @@ class GeoPTV3(nn.Module):
             if "batch" in input_dict:
                 ptv3_input["batch"] = input_dict["batch"]
             else:
-                ptv3_input["batch"] = torch.arange(B_size, device=raw_coord.device).repeat_interleave(self.num_points)
+                # Dynamic handling: Calculate N based on actual flat_coord size
+                # This fixes the mismatch between 80000 and 149393 during test
+                current_N = flat_coord.shape[0] // B_size
+                ptv3_input["batch"] = torch.arange(B_size, device=raw_coord.device).repeat_interleave(current_N)
 
         ptv3_input["coord"] = flat_coord
         ptv3_input["feat"] = flat_feat
@@ -313,28 +333,37 @@ class GeoPTV3(nn.Module):
         # -----------------------------------------------------------
         # C. Feature Assembly (Shared KNN Optimization)
         # -----------------------------------------------------------
-        sem_feat_dense = sem_feat_sparse.view(B_size, self.num_points, -1)
+        # Use dynamic shape [-1] instead of self.num_points
+        sem_feat_dense = sem_feat_sparse.view(B_size, -1, sem_feat_sparse.shape[-1])
         
+        # Get actual point count (80000 during train, dynamic during test)
+        N_current = j_coord.shape[1]
+
         # [Optimization] Compute KNN once and reuse
-        # 1. Compute KNN indices for j_coord (raw dense coordinates)
-        # Note: pointops.knn_query requires flattened input and offset
         j_coord_flat = j_coord.view(-1, 3).contiguous()
-        j_offset = torch.arange(1, B_size + 1, dtype=torch.int32, device=j_coord.device) * self.num_points
         
-        # Use k=16 (default)
+        # Calculate offset using ACTUAL N_current
+        j_offset = torch.arange(1, B_size + 1, dtype=torch.int32, device=j_coord.device) * N_current
+        
         k_neighbors = 16
         idx_flat = pointops.knn_query(k_neighbors, j_coord_flat, j_offset)[0].long()
         
-        # Convert to local indices [B, N, k] for reuse in modules
-        batch_start = (torch.arange(B_size, device=j_coord.device) * self.num_points).view(B_size, 1, 1)
-        shared_knn_idx = idx_flat.view(B_size, self.num_points, k_neighbors) - batch_start
+        # Calculate batch start using ACTUAL N_current
+        batch_start = (torch.arange(B_size, device=j_coord.device) * N_current).view(B_size, 1, 1)
         
-        # 2. Compute GBlobs (Reusing shared_knn_idx)
+        # Reshape using ACTUAL N_current
+        shared_knn_idx = idx_flat.view(B_size, N_current, k_neighbors) - batch_start
+        
+        # Compute GBlobs (9 dims)
         geo_blobs = compute_lean_gblobs(j_coord, k=k_neighbors, knn_idx=shared_knn_idx, scale=self.geo_scale) 
         
-        # 3. Concatenate Features
-        rgb_feat = j_feat_raw[:, :, :3]
-        jafar_input = torch.cat([geo_blobs, rgb_feat], dim=-1)
+        # Concatenate Extra Features dynamically (e.g., RGB or Density)
+        if self.extra_feat_dim > 0:
+            # Safely slice the required number of feature channels
+            extra_feat = j_feat_raw[:, :, :self.extra_feat_dim]
+            jafar_input = torch.cat([geo_blobs, extra_feat], dim=-1)
+        else:
+            jafar_input = geo_blobs
         
         # -----------------------------------------------------------
         # D. PointJAFAR Refinement (Reusing shared_knn_idx)
@@ -343,15 +372,19 @@ class GeoPTV3(nn.Module):
             xyz=j_coord,
             jafar_feat=jafar_input,
             sem_feat=sem_feat_dense,
-            knn_idx=shared_knn_idx # Pass pre-computed KNN
+            knn_idx=shared_knn_idx 
         )
         
         # -----------------------------------------------------------
         # E. Outputs
         # -----------------------------------------------------------
-        targets = input_dict['segment'].view(-1)
+        if "segment" in input_dict:
+            targets = input_dict['segment'].view(-1)
+        else:
+            targets = None
         
-        if self.training:
+        # Only update prototypes if we have targets and are training
+        if self.training and targets is not None:
             valid_mask = (targets != 255)
             if valid_mask.sum() > 0:
                 self.update_prototypes(refined_feat[valid_mask].detach(), targets[valid_mask])
@@ -369,7 +402,11 @@ class GeoPTV3(nn.Module):
             "prototypes": self.prototypes
         }
 
-        if self.criteria is not None:
+        # Calculate loss only if targets exist and criteria is set
+        if self.criteria is not None and targets is not None:
             output_dict['loss'] = self.criteria(output_dict)
+        elif self.criteria is not None:
+            # For logging purposes in case loss is expected but not computable
+            output_dict['loss'] = torch.tensor(0.0, device=refined_logits.device)
             
         return output_dict
