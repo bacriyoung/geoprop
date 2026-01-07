@@ -6,6 +6,8 @@ import inspect
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
+from pointcept.models.utils.structure import Point
+import pointcept.utils.comm as comm  # Required for DDP synchronization
 
 # =========================================================================
 # 0. GBlobs Calculation Utilities
@@ -190,13 +192,33 @@ class GeoPTV3(nn.Module):
             self.criteria = None
 
     def update_prototypes(self, features, labels):
+        """
+        DDP-Safe Prototype Update Logic.
+        """
+        # 1. Compute local sum and count
+        local_proto_sum = torch.zeros_like(self.prototypes)
+        local_proto_count = torch.zeros_like(self.proto_count)
+        
+        for c in range(self.aux_head.out_features):
+            mask = (labels == c)
+            if mask.sum() > 0:
+                local_proto_sum[c] = features[mask].sum(0)
+                local_proto_count[c] = mask.sum()
+
+        # 2. [FIX] Synchronize across GPUs (AllReduce)
+        # Without this, each GPU maintains divergent prototypes, causing loss noise.
+        comm.all_reduce(local_proto_sum)
+        comm.all_reduce(local_proto_count)
+
+        # 3. Update Buffer with Momentum
         with torch.no_grad():
             for c in range(self.aux_head.out_features):
-                mask = (labels == c)
-                if mask.sum() > 0:
-                    curr_proto = features[mask].mean(0)
-                    self.prototypes[c] = self.momentum * self.prototypes[c] + (1 - self.momentum) * curr_proto
-                    self.proto_count[c] += 1
+                if local_proto_count[c] > 0:
+                    # Compute global mean
+                    global_mean = local_proto_sum[c] / local_proto_count[c]
+                    # Momentum update
+                    self.prototypes[c] = self.momentum * self.prototypes[c] + (1 - self.momentum) * global_mean
+                    self.proto_count[c] += local_proto_count[c]
 
     def forward(self, input_dict):
         # -----------------------------------------------------------
@@ -247,7 +269,6 @@ class GeoPTV3(nn.Module):
         ptv3_input["feat"] = flat_feat
         
         # Input Channel Adaptation
-        # If PTv3 expects 6 channels (RGB+XYZ) but 'feat' is 3 (RGB), append coords.
         if self.ptv3_in_channels == 6 and flat_feat.shape[1] == 3:
             ptv3_input["feat"] = torch.cat([flat_feat, flat_coord], dim=1)
         
@@ -257,27 +278,40 @@ class GeoPTV3(nn.Module):
             ptv3_input["grid_coord"] = flat_grid
 
         # -----------------------------------------------------------
-        # B. Stage I: PTv3 Forward
+        # B. Stage I: PTv3 Forward (Safe Version)
         # -----------------------------------------------------------
-        sem_feat_sparse = self.sem_stream(ptv3_input).feat 
-        aux_logits = self.aux_head(sem_feat_sparse) 
+        # 1. Construct Point object (for compatibility with restoration logic)
+        point = Point(ptv3_input)
         
-        # -----------------------------------------------------------
-        # C. Feature Assembly for JAFAR (Lean 12-Dim)
-        # -----------------------------------------------------------
-        sem_feat_dense = sem_feat_sparse.view(B_size, self.num_points, -1)
+        # 2. Backbone Forward
+        out_point = self.sem_stream(point)
         
-        # 1. GBlobs (9-dim)
+        # 3. 🟢 [Insurance] Feature Restoration
+        # Although experiments show PTv3 output is aligned by default, keeping this code
+        # acts as insurance for future changes or specific backbone configurations.
+        # If out_point is already restored, 'pooling_parent' is empty, and this block does nothing.
+        if isinstance(out_point, Point):
+            while "pooling_parent" in out_point.keys():
+                parent = out_point.pop("pooling_parent")
+                inverse = out_point.pop("pooling_inverse")
+                parent.feat = out_point.feat[inverse]
+                out_point = parent
+            sem_feat_original = out_point.feat
+        else:
+            sem_feat_original = out_point
+
+        # -----------------------------------------------------------
+        # C. Feature Assembly
+        # -----------------------------------------------------------
+        sem_feat_dense = sem_feat_original.view(B_size, self.num_points, -1)
+        aux_logits = self.aux_head(sem_feat_original) 
+        
         geo_blobs = compute_lean_gblobs(j_coord, k=16) 
-        
-        # 2. RGB (3-dim)
         rgb_feat = j_feat_raw[:, :, :3]
-        
-        # 3. Concatenate (12-dim)
         jafar_input = torch.cat([geo_blobs, rgb_feat], dim=-1)
         
         # -----------------------------------------------------------
-        # D. PointJAFAR Refinement
+        # D. Refinement
         # -----------------------------------------------------------
         refined_logits, affinity, k_idx, refined_feat, bdy_logits = self.geo_stream(
             xyz=j_coord,
@@ -285,11 +319,9 @@ class GeoPTV3(nn.Module):
             sem_feat=sem_feat_dense
         )
         
-        # -----------------------------------------------------------
-        # E. Outputs
-        # -----------------------------------------------------------
         targets = input_dict['segment'].view(-1)
         
+        # 🟢 Use DDP-Safe Update Logic
         if self.training:
             valid_mask = (targets != 255)
             if valid_mask.sum() > 0:

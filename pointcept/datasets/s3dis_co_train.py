@@ -18,10 +18,9 @@ class S3DISCoTrainDataset(Dataset):
                  test_mode=False,
                  loop=1,
                  labeled_ratio=0.001,
-                 # 🟢 回归纯随机策略，但保留参数接口
-                 hash_seed_1=10264649,
-                 hash_seed_2=72138476,
-                 hash_seed_3=69787772): 
+                 hash_seed_1=57361723,
+                 hash_seed_2=92990218,
+                 hash_seed_3=69232043): 
         self.data_root = data_root
         self.split = split
         self.transform = Compose(transform)
@@ -31,7 +30,7 @@ class S3DISCoTrainDataset(Dataset):
         self.logger = get_root_logger()
         self.labeled_ratio = labeled_ratio
         
-        # 变成 int 防止溢出
+        # Hash seeds for coordinate-based masking
         self.h1_k = int(hash_seed_1)
         self.h2_k = int(hash_seed_2)
         self.h3_k = int(hash_seed_3)
@@ -75,34 +74,40 @@ class S3DISCoTrainDataset(Dataset):
     def __getitem__(self, idx):
         room_dir = self.data_list[idx]
         try:
-            # 1. 这里的 coord 是完整的房间数据
             coord = np.load(os.path.join(room_dir, "coord.npy")).astype(np.float32)
             color = np.load(os.path.join(room_dir, "color.npy")).astype(np.float32)
             segment = np.load(os.path.join(room_dir, "segment.npy")).astype(np.int64).reshape(-1)
         except:
             return self.__getitem__(np.random.randint(0, len(self)))
 
-        # ==========================================================
-        # 🟢 [Optimized Step 1] 几何哈希采样 (在 Crop 前计算，确保全场景点标签固定)
-        # ==========================================================
+        # ==================================================================
+        # Sparse Label Masking (Coordinate Hashing)
+        # ==================================================================
+        # Ideally, weak supervision requires the set of labeled points to remain 
+        # FIXED throughout the entire training process (across epochs).
+        # Random sampling at runtime would result in the model seeing all labels eventually,
+        # which violates the weak supervision assumption.
+        #
+        # Solution: Coordinate Hashing.
+        # We compute a deterministic hash based on the raw XYZ coordinates.
+        # This ensures that a specific physical point always gets the same hash value, 
+        # regardless of which epoch it is sampled in or how it is cropped.
         if self.split == 'train':
-            # 基于原始完整坐标计算 Hash，确保无论怎么 Crop，同一个坐标点标签状态永恒不变
             h1 = np.abs(coord[:, 0] * self.h1_k).astype(np.int64)
             h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
             h3 = np.abs(coord[:, 2] * self.h3_k).astype(np.int64)
             seed_hash = h1 ^ h2 ^ h3
+            
+            # Threshold determines the labeling ratio (e.g., 0.1%)
             threshold = int(self.labeled_ratio * 100000)
             label_mask = (seed_hash % 100000) < threshold
             
-            # 将无标签点设为 ignore_index
+            # Apply mask: Set unlabeled points to ignore_index (255)
+            # The model never sees the ground truth for these points.
             segment[~label_mask] = 255
 
-        # 2. 裁剪 (此时 segment 已经包含了固定的弱监督标签)
         coord, color, segment = self.crop_fixed_size(coord, color, segment)
 
-        # ==========================================================
-        # 🟢 [Optimized Step 2] 数据增强 (温和版)
-        # ==========================================================
         if self.split == 'train':
             # Rotate
             angle = np.random.uniform(0, 2 * np.pi)
@@ -113,7 +118,9 @@ class S3DISCoTrainDataset(Dataset):
             scale = np.random.uniform(0.9, 1.1)
             coord *= scale
             
-            # Jitter: 🔴 弱监督下建议默认关闭，用户可根据需求在 README 自行开启
+            # Jitter: Disabled intentionally.
+            # Jittering point coordinates breaks the precise geometric relationships 
+            # that JAFAR relies on for affinity calculation.
             # sigma, clip = 0.001, 0.005
             # jitter = np.clip(sigma * np.random.randn(*coord.shape), -1 * clip, clip)
             # coord += jitter
@@ -122,9 +129,6 @@ class S3DISCoTrainDataset(Dataset):
             if np.random.random() > 0.5: coord[:, 0] = -coord[:, 0]
             if np.random.random() > 0.5: coord[:, 1] = -coord[:, 1]
 
-        # ==========================================================
-        # 🟢 [Step 3] 格式化
-        # ==========================================================
         coord_t = torch.from_numpy(coord).float()
         color_t = torch.from_numpy(color).float()
         target = torch.from_numpy(segment).long()

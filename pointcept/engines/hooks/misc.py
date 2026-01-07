@@ -102,10 +102,9 @@ class InformationWriter(HookBase):
         self.trainer.comm_info["iter_info"] += info
 
     def after_step(self):
-        # === 🔴 修复开始: 过滤掉非标量的 Tensor，防止 .item() 报错 ===
+        # === fix ===
         if "model_output_dict" in self.trainer.comm_info.keys():
             model_output_dict = self.trainer.comm_info["model_output_dict"]
-            # 筛选出有效的标量 key
             valid_keys = []
             for key, val in model_output_dict.items():
                 if isinstance(val, torch.Tensor):
@@ -115,9 +114,8 @@ class InformationWriter(HookBase):
                 elif isinstance(val, (int, float)):
                     self.trainer.storage.put_scalar(key, val)
                     valid_keys.append(key)
-            # 更新 keys 列表，后续只处理有效的标量
             self.model_output_keys = valid_keys
-        # === 🔴 修复结束 ===
+        # === fix end ===
 
     # def after_step(self):
     #     if "model_output_dict" in self.trainer.comm_info.keys():

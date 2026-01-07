@@ -6,17 +6,17 @@ from .builder import LOSSES
 @LOSSES.register_module()
 class GeoCoTrainLoss(nn.Module):
     def __init__(self, 
-                 lambda_sup=1.0,    # 兼容 Config 参数名 (对应 Main Loss)
-                 lambda_con=1.0,    # 兼容 Config 参数名 (对应 Aux Loss)
+                 lambda_main=1.0,   # Renamed from lambda_sup: Weight for Refined Logits (JAFAR/Final)
+                 lambda_aux=1.0,    # Renamed from lambda_con: Weight for Aux Logits (PTv3/Backbone)
                  lambda_aff=0.1,    
                  lambda_dist=0.1,   
                  lambda_bdy=0.5,    
-                 warmup_epochs=0,   # 保留参数，即使 Logic 改变
+                 warmup_epochs=0,   # Reserved parameter for potential future scheduling
                  ignore_index=255):
         super().__init__()
-        # Explicit Mapping for clarity
-        self.lambda_main = lambda_sup  # Weight for Refined Logits
-        self.lambda_aux = lambda_con   # Weight for PTv3 Raw Logits
+        
+        self.lambda_main = lambda_main 
+        self.lambda_aux = lambda_aux   
         
         self.lambda_aff = lambda_aff
         self.lambda_dist = lambda_dist
@@ -35,14 +35,16 @@ class GeoCoTrainLoss(nn.Module):
         loss_main = self.ce(output_dict['refined_logits'], target)
         
         # Aux: PTv3 output (Backbone Supervision)
-        # 强迫 PTv3 自身也要学好，不能全靠 JAFAR 修
+        # Force PTv3 to learn robust features independently, 
+        # ensuring it doesn't rely solely on JAFAR refinement.
         loss_aux = self.ce(output_dict['aux_logits'], target)
         
         loss_sup = self.lambda_main * loss_main + self.lambda_aux * loss_aux
         
         # 2. Affinity Loss (Soft-Thresholding)
         # -----------------------------------------------------------
-        # 目标：JAFAR 认为亲和力高的点，Refined 特征必须接近
+        # Objective: If JAFAR predicts high affinity between points, 
+        # their Refined features must be close in embedding space.
         feat_to_constrain = output_dict['refined_feat'] # [B*N, C]
         affinity = output_dict['affinity'] # [B, N, K]
         k_idx = output_dict['k_idx']
@@ -62,7 +64,8 @@ class GeoCoTrainLoss(nn.Module):
         feat_dist = torch.sum((center_feat - neighbor_feat) ** 2, dim=-1) / (C ** 0.5)
         
         # [Strategy] Soft-Thresholding
-        # 只有 affinity > 0.5 的点才产生拉力，且 affinity 越高拉力越大
+        # Only points with affinity > 0.5 generate pull force.
+        # Higher affinity results in stronger pull force.
         aff_weight = F.relu(affinity - 0.5) 
         
         # Normalize by sum of weights to avoid scaling issues

@@ -6,24 +6,30 @@ from concurrent.futures import ProcessPoolExecutor
 
 # ================= Configuration =================
 DATA_ROOT = 'data/s3dis'
-NUM_TRIALS = 2000
+NUM_TRIALS = 800
 LABELED_RATIO = 0.001
 NUM_CLASSES = 13
 # =================================================
 
 def load_all_data(data_root):
-    # 只读 Area 1 & 2 加速
-    print(f"Loading data from {data_root} (Area 1/2)...")
+    print(f"Loading ALL training data from {data_root} (excluding Area 5)...")
+    
     files = glob.glob(os.path.join(data_root, "**", "coord.npy"), recursive=True)
     room_list = []
+    
     for f in tqdm(files):
-        if "Area_5" in f: continue
-        if "Area_1" not in f and "Area_2" not in f: continue
+        if "Area_5" in f: 
+            continue
+        
         try:
             coord = np.load(f).astype(np.float32)
             segment = np.load(f.replace("coord.npy", "segment.npy")).astype(np.int64).reshape(-1)
             room_list.append((coord, segment))
-        except: pass
+        except Exception as e: 
+            print(f"Error loading {f}: {e}")
+            pass
+            
+    print(f"✅ Total rooms loaded: {len(room_list)}")
     return room_list
 
 def evaluate_seed(args):
@@ -33,7 +39,7 @@ def evaluate_seed(args):
     total_class_counts = np.zeros(NUM_CLASSES, dtype=np.int64)
     
     for coord, segment in room_data:
-        # 🟢 [MATCHING V20 DATASET LOGIC]
+        # [MATCHING V20 DATASET LOGIC]
         # Pure Coordinate Hashing
         h1 = np.abs(coord[:, 0] * h1_k).astype(np.int64)
         h2 = np.abs(coord[:, 1] * h2_k).astype(np.int64)
