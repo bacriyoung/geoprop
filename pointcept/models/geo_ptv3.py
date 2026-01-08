@@ -30,6 +30,10 @@ def compute_covariance_features(features, knn_indices, k=16):
     
     # Gather neighbors: [B, N, k, C]
     neighbors = feat_flat[idx_flat].view(B, N, k, C)
+
+    # Force Float32 calculation to prevent FP16 overflow during x*x
+    dtype_backup = features.dtype
+    neighbors = neighbors.float()
     
     # Centering: subtract local mean
     local_mean = neighbors.mean(dim=2, keepdim=True) 
