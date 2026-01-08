@@ -46,7 +46,7 @@ def compute_covariance_features(features, knn_indices, k=16):
     
     # Flatten covariance matrix: [B, N, C*C]
     cov_flat = cov.view(B, N, C*C)
-    return cov_flat
+    return cov_flat.to(dtype_backup)
 
 def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=10.0):
     """
