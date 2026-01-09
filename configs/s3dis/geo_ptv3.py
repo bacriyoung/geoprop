@@ -13,7 +13,7 @@ seed = 38345489
 epoch_num = 100 
 epoch = epoch_num 
 eval_epoch = epoch_num 
-batch_size = 4  # Aligned with Official
+batch_size = 3  # Aligned with Official
 num_worker = 4  # Aligned with Official
 save_freq = None
 
@@ -34,19 +34,19 @@ model = dict(
     type="GeoPTV3", 
     
     # 1. JAFAR Specific Parameters
-    geo_input_channels=6,        # RGB + Voxel Center
-    jafar_kernel_size=5,         # Aligned with PTv3 Stem
+    # geo_input_channels=6,        # RGB + Voxel Center
+    # jafar_kernel_size=5,         # Aligned with PTv3 Stem
     attn_search_radius=1,        # 3x3x3 Neighborhood search
     attn_dim=64,
     
     # 2. Loss Configuration (Internal)
     criteria=dict(
         type="GeoCoTrainLoss", 
-        lambda_main=1.0,  # Semantic Loss (Strong supervision on 0.1% points)
-        lambda_aux=1.0,   # PTv3 Aux Loss
+        lambda_main=10.0,  # Semantic Loss (Strong supervision on 0.1% points)
+        lambda_aux=4.0,   # PTv3 Aux Loss
         lambda_aff=0.1,   # Affinity Loss (Self-supervised)
         lambda_dist=0.1,  # Distribution Loss (Prototype alignment)
-        lambda_bdy=0.5,   # Boundary Loss (Geometric Edge)
+        lambda_bdy=0.1,   # Boundary Loss (Geometric Edge)
         warmup_epochs=15, 
         ignore_index=ignore_index
     ),
@@ -99,7 +99,7 @@ optimizer = dict(
 
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[lr, lr * 0.1, lr], # [Head, Backbone]
+    max_lr=[lr, lr * 0.1], # [Head, Backbone]
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
@@ -107,7 +107,7 @@ scheduler = dict(
 )
 
 # Keyword match to identify backbone parameters
-param_dicts = [dict(keyword="geo_stream", lr=lr), dict(keyword="sem_stream", lr=lr * 0.1)]
+param_dicts = [dict(keyword="geo_stream", lr=lr)]
 
 # =========================================================================
 # Data Settings
@@ -130,7 +130,7 @@ data = dict(
         type="S3DISCoTrainDataset",
         split="train",
         data_root=data_root,
-        num_points=80000,
+        # num_points=80000,
         voxel_size=0.02,
         loop=30,
         labeled_ratio=0.001, # 0.1% Labels
@@ -155,8 +155,8 @@ data = dict(
                 return_grid_coord=True,
             ),
             # Cropping
-            dict(type="SphereCrop", sample_rate=0.6, mode="random"),
-            dict(type="SphereCrop", point_max=204800, mode="random"),
+            dict(type="SphereCrop", sample_rate=0.4, mode="random"),
+            dict(type="SphereCrop", point_max=80000, mode="random"),
             dict(type="CenterShift", apply_z=False),
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
