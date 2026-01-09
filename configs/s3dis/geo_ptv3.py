@@ -36,7 +36,7 @@ model = dict(
     # 1. JAFAR Specific Parameters
     geo_input_channels=6,        # RGB + Voxel Center
     jafar_kernel_size=5,         # Aligned with PTv3 Stem
-    attn_search_radius=3,        # 3x3x3 Neighborhood search
+    attn_search_radius=1,        # 3x3x3 Neighborhood search
     attn_dim=64,
     
     # 2. Loss Configuration (Internal)

@@ -121,7 +121,7 @@ class VoxelJAFAR(nn.Module):
             K_proj = K_proj + P_pos
             
         attn_logits = torch.matmul(Q_proj, K_proj.transpose(-1, -2)) / (self.attn_dim ** 0.5)
-        attn_logits = attn_logits.masked_fill(~valid_mask.unsqueeze(1), -1e9)
+        attn_logits = attn_logits.masked_fill(~valid_mask.unsqueeze(1), -1e4)
         affinity = self.softmax(attn_logits)
         
         refined = torch.matmul(affinity, V_proj).squeeze(1)
