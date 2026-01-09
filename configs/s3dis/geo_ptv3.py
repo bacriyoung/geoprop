@@ -168,22 +168,37 @@ data = dict(
         ],
     ),
 
-    # Val: Official Pipeline (Ensure Fair Comparison)
+# =========================================================================
+    # Val: High-Res (0.02) but Cropped (Safety Mode)
+    # =========================================================================
     val=dict(
         type=dataset_type,
         split="Area_5",
         data_root=data_root,
+        
+        # [Strategy] Use standard pipeline (test_mode=False) to support standard transforms
+        test_mode=False, 
+        loop=1, 
+
         transform=[
             dict(type="CenterShift", apply_z=True),
-            dict(type="Copy", keys_dict={"segment": "origin_segment"}),
+            dict(type="Copy", keys_dict={"segment": "origin_segment"}), 
+            
+            # 1. High Resolution Voxelization (Keep 0.02!)
             dict(
                 type="GridSample",
-                grid_size=0.02,
+                grid_size=0.02, # 保持高分辨率
                 hash_type="fnv",
-                mode="train", # Official config uses mode='train' for val to keep consistency
+                mode="train",
                 return_grid_coord=True,
                 return_inverse=True,
             ),
+
+            # 2. [Critical] Force Crop to prevent OOM
+            # Instead of feeding 1M points, we force crop the center 100k points.
+            # mode="center" ensures deterministic results (stable validation curve).
+            dict(type="SphereCrop", point_max=100000, mode="center"),
+
             dict(type="CenterShift", apply_z=False),
             dict(type="NormalizeColor"),
             dict(type="ToTensor"),
@@ -193,28 +208,33 @@ data = dict(
                 feat_keys=("color", "normal"),
             ),
         ],
-        test_mode=False,
     ),
 
-    # Test: Official Pipeline + TTA
+    # =========================================================================
+    # Test: High-Res (0.02) with TTA Disabled
+    # =========================================================================
     test=dict(
         type=dataset_type,
         split="Area_5",
         data_root=data_root,
+        test_mode=True, # Test phase needs test_mode for result submission formatting
+        
         transform=[
             dict(type="CenterShift", apply_z=True),
             dict(type="NormalizeColor"),
         ],
-        test_mode=True,
+        
         test_cfg=dict(
             voxelize=dict(
                 type="GridSample",
-                grid_size=0.02,
+                grid_size=0.02, # Keep High Res
                 hash_type="fnv",
                 mode="test",
                 return_grid_coord=True,
             ),
-            crop=None,
+            # Note: For final testing, if OOM occurs, you usually need a separate sliding-window script.
+            # But disabling TTA helps a lot.
+            crop=None, 
             post_transform=[
                 dict(type="CenterShift", apply_z=False),
                 dict(type="ToTensor"),
@@ -224,17 +244,9 @@ data = dict(
                     feat_keys=("color", "normal"),
                 ),
             ],
+            # [Memory Saving] Disable TTA (Run 1x instead of 12x)
             aug_transform=[
-                [dict(type="RandomScale", scale=[0.9, 0.9])],
-                [dict(type="RandomScale", scale=[0.95, 0.95])],
-                [dict(type="RandomScale", scale=[1, 1])],
-                [dict(type="RandomScale", scale=[1.05, 1.05])],
-                [dict(type="RandomScale", scale=[1.1, 1.1])],
-                [dict(type="RandomScale", scale=[0.9, 0.9]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[0.95, 0.95]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[1, 1]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[1.05, 1.05]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[1.1, 1.1]), dict(type="RandomFlip", p=1)],
+                [dict(type="Identity")]
             ],
         ),
     ),

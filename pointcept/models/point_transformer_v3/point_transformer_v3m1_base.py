@@ -512,20 +512,19 @@ class Embedding(PointModule):
 
     def forward(self, point: Point):
         point = self.stem(point)
-        # ==================================================================
-        # [NEW CODE INSERTION]
-        # Calculate N-to-M mapping (Inverse Indices) efficiently on GPU.
-        # This allows external modules (like JAFAR) to map N points to M voxels
-        # without expensive Python-side sorting or searching.
-        # ==================================================================
+        
+        # ==================================================================================================
+        # [CRITICAL MODIFICATION]
+        # Efficiently calculate N-to-M mapping (Inverse Indices) using torch.unique.
+        # This has minimal overhead and is mathematically equivalent to SpConv's internal logic.
+        # ==================================================================================================
         if "inverse_indices" not in point.keys():
-            # 1. Construct the key for uniqueness: Batch Index + Grid Coord
-            # point.batch: [N], point.grid_coord: [N, 3]
-            # Result: [N, 4] representing (Batch, Coord1, Coord2, Coord3)
+            # 1. Construct keys: (Batch, Z, Y, X)
+            # We use int32 to save memory, assuming coordinates fit in int32 (usually true).
             coords_with_batch = torch.cat([point.batch.unsqueeze(-1).int(), point.grid_coord.int()], dim=1)
             
-            # 2. Use torch.unique to find unique voxels and the inverse mapping
-            # sorted=True ensures the order matches spconv's internal sorting
+            # 2. Get inverse mapping directly
+            # sorted=True ensures the order aligns with SpConv's internal sorted indices.
             _, inverse_indices = torch.unique(coords_with_batch, dim=0, return_inverse=True, sorted=True)
             
             point["inverse_indices"] = inverse_indices
