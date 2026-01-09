@@ -27,11 +27,18 @@ def collate_fn(batch):
         # str is also a kind of Sequence, judgement should before Sequence
         return list(batch)
     elif isinstance(batch[0], Sequence):
-        for data in batch:
-            data.append(torch.tensor([data[0].shape[0]]))
-        batch = [collate_fn(samples) for samples in zip(*batch)]
-        batch[-1] = torch.cumsum(batch[-1], dim=0).int()
-        return batch
+        # [Fix for Sliding Window] 
+        # Only compute offset if the elements are Tensors (like coords/feats).
+        # If they are Dicts (like fragment_list), just return the list as is.
+        if isinstance(batch[0][0], torch.Tensor):
+            for data in batch:
+                data.append(torch.tensor([data[0].shape[0]]))
+            batch = [collate_fn(samples) for samples in zip(*batch)]
+            batch[-1] = torch.cumsum(batch[-1], dim=0).int()
+            return batch
+        else:
+            # It is a list of dicts (fragments) or other objects, do not collate/concat.
+            return batch
     elif isinstance(batch[0], Mapping):
         if "img_num" in batch[0].keys():
             max_img_num = max([d["img_num"] for d in batch])

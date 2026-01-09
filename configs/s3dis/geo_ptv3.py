@@ -11,34 +11,34 @@ seed = 38345489
 
 # Training Parameters
 epoch_num = 100 
-epoch = epoch_num       # Map epoch_num to engine's expected key 'epoch'
-eval_epoch = epoch_num  # Map epoch_num to engine's expected key 'eval_epoch'
-batch_size = 4
+epoch = epoch_num 
+eval_epoch = epoch_num 
+# [Attention] 
+batch_size = 4  
 num_worker = 4 
 save_freq = None
 
-#  [AMP] Enable Mixed Precision for speed and memory efficiency
+# [AMP] Enable Mixed Precision
 enable_amp = True 
 empty_cache = False
-mix_prob = 0.0 #  [Critical] Must disable Mix3D for weak supervision, otherwise geometric stream fails
+mix_prob = 0.0 # [Critical] Disable Mix3D for weak supervision
 
 # Dataset Parameters
 num_classes = 13 
-# Note: Evaluator reads data.ignore_index, Loss reads model.criteria.ignore_index
 ignore_index = 255 
 
 # -------------------------------------------------------------------------
-# Model Settings (Aligned with Official PTv3m1)
+# Model Settings (GeoPTV3)
 # -------------------------------------------------------------------------
 model = dict(
     type="GeoPTV3",
     geo_input_dim=6,
     num_classes=num_classes,
-    num_points=80000,
+    num_points=80000, 
     criteria=dict(
         type="GeoCoTrainLoss", 
-        lambda_main=10.0,  # Weight for Final Prediction (Strong supervision anchor for 0.1% scenario)
-        lambda_aux=4.0,    # Weight for PTv3 Backbone output
+        lambda_main=10.0, 
+        lambda_aux=4.0,   
         lambda_aff=0.1, 
         lambda_dist=0.1,
         lambda_bdy=0.1,
@@ -52,11 +52,11 @@ model = dict(
         order=["z", "z-trans", "hilbert", "hilbert-trans"],
         stride=(2, 2, 2, 2),
         enc_depths=(2, 2, 2, 6, 2),
-        enc_channels=(32, 64, 128, 256, 512), # Aligned with official
+        enc_channels=(32, 64, 128, 256, 512), 
         enc_num_head=(2, 4, 8, 16, 32),
         enc_patch_size=(1024, 1024, 1024, 1024, 1024),
         dec_depths=(2, 2, 2, 2),
-        dec_channels=(64, 64, 128, 256),      # Aligned with official
+        dec_channels=(64, 64, 128, 256),
         dec_num_head=(4, 4, 8, 16),
         dec_patch_size=(1024, 1024, 1024, 1024),
         mlp_ratio=4,
@@ -82,12 +82,9 @@ model = dict(
 )
 
 # -------------------------------------------------------------------------
-# Optimizer & Scheduler (Hybrid Strategy)
+# Optimizer & Scheduler
 # -------------------------------------------------------------------------
-# LR Strategy: Backbone slow (0.1x), Head fast (1x)
-# This prevents PointJAFAR noise from ruining Backbone features early on.
 lr = 0.001 
-# clip_grad = 10.0
 optimizer = dict(
     type="AdamW", 
     lr=lr, 
@@ -96,92 +93,80 @@ optimizer = dict(
 
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[lr, lr * 0.1], # Head uses 0.001, Backbone uses 0.0001
+    max_lr=[lr, lr * 0.1], 
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=1000.0,
 )
 
-# Define which parameters belong to backbone (enjoy 0.1x LR)
 param_dicts = [dict(keyword="sem_stream", lr=lr * 0.1)]
 
 # -------------------------------------------------------------------------
-# Data Settings
+# Data Settings (Modified for Consistency)
 # -------------------------------------------------------------------------
 data = dict(
     num_workers=num_worker,
-    batch_size=batch_size,
+    batch_size=batch_size, 
+    batch_size_val=1,           
+    batch_size_test=1,          
     num_classes=num_classes,
-    ignore_index=ignore_index, 
+    ignore_index=ignore_index,
     names=[
         "ceiling", "floor", "wall", "beam", "column", "window", "door",
         "table", "chair", "sofa", "bookcase", "board", "clutter"
     ],
     
+    # -------------------------------------------------------------
+    # Train: Random KNN Crop 
+    # -------------------------------------------------------------
     train=dict(
         type="S3DISCoTrainDataset",
         split="train",
         data_root="data/s3dis",
-        num_points=80000,
+        num_points=80000, 
         voxel_size=0.02,
-        transform=None, # Uses internal crop within dataset
+        transform=None,   
         loop=30,
-        labeled_ratio=0.001, # 0.1% labeled
+        labeled_ratio=0.001,
+        test_mode=False,
     ),
+
+    # -------------------------------------------------------------
+    # Val: Sliding Window 
+    # -------------------------------------------------------------
     val=dict(
         type="S3DISCoTrainDataset",
         split="val",
         data_root="data/s3dis",
+        num_points=80000, 
+        voxel_size=0.02,
+        test_mode=True,   
+        stride=2.0,       
+        transform=None,
+        loop=1,  
+    ),
+
+    # -------------------------------------------------------------
+    # Test: Sliding Window 
+    # -------------------------------------------------------------
+    test=dict(
+        type="S3DISCoTrainDataset",
+        split="Area_5",
+        data_root="data/s3dis",
         num_points=80000,
         voxel_size=0.02,
-        test_mode=True,
-        transform=None,
-        loop=1, 
-    ),
-    test=dict(
-        type="S3DISDataset",
-        split="Area_5",  # Official standard test split. Change to "val" if your data requires it.
-        data_root="data/s3dis/s3dis",
-        transform=[
-            dict(type="CenterShift", apply_z=True),
-            dict(type="NormalizeColor"),
-        ],
-        test_mode=True,
-        test_cfg=dict(
-            voxelize=dict(
-                type="GridSample",
-                grid_size=0.02, # This replaces the 'voxel_size' param that caused the error
-                hash_type="fnv",
-                mode="test",
-                return_grid_coord=True,
-            ),
-            crop=None,
-            post_transform=[
-                dict(type="CenterShift", apply_z=False),
-                dict(type="ToTensor"),
-                dict(
-                    type="Collect",
-                    keys=("coord", "grid_coord", "index"),
-                    feat_keys=("color", "normal"),
-                ),
-            ],
-            # Test Time Augmentation (TTA) from Official Config
-            aug_transform=[
-                [dict(type="RandomScale", scale=[0.9, 0.9])],
-                [dict(type="RandomScale", scale=[0.95, 0.95])],
-                [dict(type="RandomScale", scale=[1, 1])],
-                [dict(type="RandomScale", scale=[1.05, 1.05])],
-                [dict(type="RandomScale", scale=[1.1, 1.1])],
-                [dict(type="RandomScale", scale=[0.9, 0.9]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[0.95, 0.95]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[1, 1]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[1.05, 1.05]), dict(type="RandomFlip", p=1)],
-                [dict(type="RandomScale", scale=[1.1, 1.1]), dict(type="RandomFlip", p=1)],
-            ],
-        ),
+        test_mode=True, 
+        stride=2.0,       
+        transform=None,   
     ),
 )
+
+# -------------------------------------------------------------------------
+# Test Config
+# -------------------------------------------------------------------------
+
+test_cfg = dict()
 
 # -------------------------------------------------------------------------
 # Hooks

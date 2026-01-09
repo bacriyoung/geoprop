@@ -2,6 +2,7 @@ import os
 import glob
 import numpy as np
 import torch
+import math
 from torch.utils.data import Dataset
 from pointcept.utils.logger import get_root_logger
 from .builder import DATASETS
@@ -20,7 +21,10 @@ class S3DISCoTrainDataset(Dataset):
                  labeled_ratio=0.001,
                  hash_seed_1=57361723,
                  hash_seed_2=92990218,
-                 hash_seed_3=69232043): 
+                 hash_seed_3=69232043,
+                 # Stride for sliding window, smaller means higher overlap/accuracy
+                 stride=0.5,
+                 **kwargs): 
         self.data_root = data_root
         self.split = split
         self.transform = Compose(transform)
@@ -29,8 +33,8 @@ class S3DISCoTrainDataset(Dataset):
         self.test_mode = test_mode
         self.logger = get_root_logger()
         self.labeled_ratio = labeled_ratio
+        self.stride = stride
         
-        # Hash seeds for coordinate-based masking
         self.h1_k = int(hash_seed_1)
         self.h2_k = int(hash_seed_2)
         self.h3_k = int(hash_seed_3)
@@ -41,14 +45,19 @@ class S3DISCoTrainDataset(Dataset):
             self.loop = 30
         else:
             self.loop = loop
+            
+        self.raw_room_list = self.get_file_list()
         
-        self.data_list = self.get_file_list()
-        
-        if len(self.data_list) > 0:
-            self.data_list = self.data_list * self.loop
+        # Build Data List
+        self.data_list = []
+        if len(self.raw_room_list) > 0:
+            if not self.test_mode:
+                self.data_list = self.raw_room_list * self.loop
+            else:
+                self.data_list = self.raw_room_list
+                
             if self.logger is not None:
-                self.logger.info(f"[{self.split}] Dataset loaded. Ratio: {self.labeled_ratio*100}%. Loop: {self.loop}. Total: {len(self.data_list)}")
-                self.logger.info(f"[{self.split}] 🔙 Strategy: Pure Coordinate Hashing (Back to Basics).")
+                self.logger.info(f"[{self.split}] Dataset loaded. Total samples: {len(self.data_list)}")
         else:
             print(f"❌ [Dataset] No files found in {self.data_root}")
 
@@ -58,13 +67,12 @@ class S3DISCoTrainDataset(Dataset):
         for root in self.data_root:
             if not os.path.isabs(root): root = os.path.abspath(root)
             if not os.path.exists(root): continue
-            
             for dirpath, _, filenames in os.walk(root):
                 if "coord.npy" in filenames:
                     if "Area_5" in dirpath:
                         if self.split == 'train': continue
                     else:
-                        if self.split == 'val': continue
+                        if self.split == 'val' or self.split == 'Area_5': continue
                     data_list.append(dirpath)
         return data_list
 
@@ -77,92 +85,145 @@ class S3DISCoTrainDataset(Dataset):
             coord = np.load(os.path.join(room_dir, "coord.npy")).astype(np.float32)
             color = np.load(os.path.join(room_dir, "color.npy")).astype(np.float32)
             segment = np.load(os.path.join(room_dir, "segment.npy")).astype(np.int64).reshape(-1)
-        except:
+        except Exception as e:
+            if self.logger is not None:
+                self.logger.error(f"Error loading {room_dir}: {e}")
             return self.__getitem__(np.random.randint(0, len(self)))
 
         # ==================================================================
-        # Sparse Label Masking (Coordinate Hashing)
+        # Training Mode: Random KNN Crop (Keep original logic)
         # ==================================================================
-        # Ideally, weak supervision requires the set of labeled points to remain 
-        # FIXED throughout the entire training process (across epochs).
-        # Random sampling at runtime would result in the model seeing all labels eventually,
-        # which violates the weak supervision assumption.
-        #
-        # Solution: Coordinate Hashing.
-        # We compute a deterministic hash based on the raw XYZ coordinates.
-        # This ensures that a specific physical point always gets the same hash value, 
-        # regardless of which epoch it is sampled in or how it is cropped.
-        if self.split == 'train':
-            h1 = np.abs(coord[:, 0] * self.h1_k).astype(np.int64)
-            h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
-            h3 = np.abs(coord[:, 2] * self.h3_k).astype(np.int64)
-            seed_hash = h1 ^ h2 ^ h3
-            
-            # Threshold determines the labeling ratio (e.g., 0.1%)
-            threshold = int(self.labeled_ratio * 100000)
-            label_mask = (seed_hash % 100000) < threshold
-            
-            # Apply mask: Set unlabeled points to ignore_index (255)
-            # The model never sees the ground truth for these points.
-            segment[~label_mask] = 255
+        if not self.test_mode:
+            if self.split == 'train':
+                # Semiautomatic labeling logic
+                h1 = np.abs(coord[:, 0] * self.h1_k).astype(np.int64)
+                h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
+                h3 = np.abs(coord[:, 2] * self.h3_k).astype(np.int64)
+                seed_hash = h1 ^ h2 ^ h3
+                threshold = int(self.labeled_ratio * 100000)
+                label_mask = (seed_hash % 100000) < threshold
+                segment[~label_mask] = 255
 
-        coord, color, segment = self.crop_fixed_size(coord, color, segment)
-
-        if self.split == 'train':
-            # Rotate
-            angle = np.random.uniform(0, 2 * np.pi)
-            cosval, sinval = np.cos(angle), np.sin(angle)
-            R = np.array([[cosval, -sinval, 0], [sinval, cosval, 0], [0, 0, 1]], dtype=np.float32)
-            coord = np.dot(coord, R.T)
-            # Scale
-            scale = np.random.uniform(0.9, 1.1)
-            coord *= scale
+            indices = self.get_knn_indices(coord, center=None) 
+            coord_c, color_c, segment_c = coord[indices], color[indices], segment[indices]
             
-            # Jitter: Disabled intentionally.
-            # Jittering point coordinates breaks the precise geometric relationships 
-            # that JAFAR relies on for affinity calculation.
-            # sigma, clip = 0.001, 0.005
-            # jitter = np.clip(sigma * np.random.randn(*coord.shape), -1 * clip, clip)
-            # coord += jitter
-            
-            # Flip
-            if np.random.random() > 0.5: coord[:, 0] = -coord[:, 0]
-            if np.random.random() > 0.5: coord[:, 1] = -coord[:, 1]
+            # Simple augmentation for train split
+            if self.split == 'train':
+                angle = np.random.uniform(0, 2 * np.pi)
+                cosval, sinval = np.cos(angle), np.sin(angle)
+                R = np.array([[cosval, -sinval, 0], [sinval, cosval, 0], [0, 0, 1]], dtype=np.float32)
+                coord_c = np.dot(coord_c, R.T)
+                scale = np.random.uniform(0.9, 1.1)
+                coord_c *= scale
+                if np.random.random() > 0.5: coord_c[:, 0] = -coord_c[:, 0]
+                if np.random.random() > 0.5: coord_c[:, 1] = -coord_c[:, 1]
 
+            return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
+
+        # ==================================================================
+        # Test/Val Mode: Dense Sliding KNN Window
+        # This part ensures we cover the whole scene with chunks similar to training
+        # ==================================================================
+        else:
+            fragment_list = []
+            coord_min = np.min(coord, axis=0)
+            coord_max = np.max(coord, axis=0)
+            
+            # Use fixed Z center to allow KNN to pick points across the floor-to-ceiling range
+            z_center = (coord_min[2] + coord_max[2]) / 2.0
+            
+            # Generate grid centers for sliding windows
+            grid_x = np.arange(coord_min[0], coord_max[0] + self.stride, self.stride)
+            grid_y = np.arange(coord_min[1], coord_max[1] + self.stride, self.stride)
+            
+            for x in grid_x:
+                for y in grid_y:
+                    center = np.array([x, y, z_center])
+                    
+                    # Core: Get fixed-size KNN indices to match training distribution
+                    indices = self.get_knn_indices(coord, center=center)
+                    
+                    coord_chunk = coord[indices]
+                    color_chunk = color[indices]
+                    segment_chunk = segment[indices]
+                    
+                    # Normalize and wrap into dict
+                    # is_test_fragment=True prevents adding 'segment' to individual chunks to save GPU memory
+                    chunk_dict = self.prepare_input_dict(
+                        coord_chunk, 
+                        color_chunk, 
+                        segment_chunk, 
+                        indices, 
+                        is_test_fragment=True
+                    )
+                    fragment_list.append(chunk_dict)
+
+            # Returns scene-level dict, compatible with SemSegTester.test() logic
+            return dict(
+                name=os.path.basename(room_dir),
+                fragment_list=fragment_list, 
+                segment=segment # Whole scene ground truth for evaluation
+            )
+
+    def prepare_input_dict(self, coord, color, segment, indices, is_test_fragment=False):
         coord_t = torch.from_numpy(coord).float()
         color_t = torch.from_numpy(color).float()
-        target = torch.from_numpy(segment).long()
+        target_t = torch.from_numpy(segment).long()
 
+        # JAFAR Feature Preparation: Normalized RGB and XYZ
         jafar_color = color_t / 255.0
         xyz_min = coord_t.min(0)[0]
         xyz_max = coord_t.max(0)[0]
         xyz_norm = (coord_t - xyz_min) / (xyz_max - xyz_min + 1e-6)
         jafar_feat = torch.cat([jafar_color, xyz_norm], dim=1) 
 
+        # PTv3 Feature Preparation: RGB in [-1, 1]
         ptv3_feat = color_t / 127.5 - 1.0 
+        
+        # Consistent Coordinate Normalization: Min-Shift (Aligns with training)
         ptv3_coord = coord_t - coord_t.min(0)[0]
         grid_coord = (ptv3_coord / self.voxel_size).int()
 
-        return dict(
+        input_dict = dict(
             coord=ptv3_coord, 
             grid_coord=grid_coord,
-            ptv3_feat=ptv3_feat,   
-            segment=target,
+            ptv3_feat=ptv3_feat,    
             jafar_coord=coord_t,
-            jafar_feat=jafar_feat
+            jafar_feat=jafar_feat,
+            index=torch.from_numpy(indices).long(), # Global indices for voting
+            offset=torch.tensor([coord_t.shape[0]], dtype=torch.int32) # Offset for PTv3/Spconv
         )
+        
+        # Only add segment if not in fragment mode to avoid redundant memory usage in testing
+        if not is_test_fragment:
+            input_dict['segment'] = target_t
+            
+        return input_dict
 
-    def crop_fixed_size(self, coord, color, label):
+    def get_knn_indices(self, coord, center=None):
         N = coord.shape[0]
         target_N = self.num_points
-        if N < target_N:
-            indices = np.arange(N)
-            pad_indices = np.random.choice(N, target_N - N, replace=True)
-            indices = np.concatenate([indices, pad_indices])
-        else:
+        
+        if center is None:
+            # Random center for training
             center_idx = np.random.choice(N)
-            center = coord[center_idx]
-            dist = np.sum((coord - center)**2, axis=1)
+            center_point = coord[center_idx]
+        else:
+            # Specified center for sliding window
+            center_point = center
+
+        # Calculate squared Euclidean distance to center
+        dist = np.sum((coord - center_point)**2, axis=1)
+        
+        # Ensure we always return exactly target_N points
+        if N < target_N:
+            base = np.arange(N)
+            pad = np.random.choice(N, target_N - N, replace=True)
+            indices = np.concatenate([base, pad])
+        else:
+            # Partition is much faster than full sort for getting top-K
             indices = np.argpartition(dist, target_N)[:target_N]
+            
+        # Shuffle to break spatial ordering, important for robust learning/inference
         np.random.shuffle(indices)
-        return coord[indices], color[indices], label[indices]
+        return indices
