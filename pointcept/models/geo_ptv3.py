@@ -6,6 +6,7 @@ import torch.distributed as dist
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
+from pointcept.models.utils.structure import Point
 
 # =========================================================================
 # 1. VoxelJAFAR Module (Structure-Aware Refiner)
@@ -144,9 +145,14 @@ class GeoPTV3(PointTransformerV3):
                  attn_dim=64,
                  use_rel_pos=True,
                  criteria=None,
+                 num_classes=13,
                  **kwargs):
+
         super().__init__(**kwargs)
+        self.num_classes = num_classes
         
+        self.dec_channels = kwargs.get('dec_channels', (64, 64, 128, 256))
+
         self.sem_feat_dim = self.dec_channels[0]
         self.aux_head = nn.Linear(self.sem_feat_dim, self.num_classes)
         
@@ -194,8 +200,13 @@ class GeoPTV3(PointTransformerV3):
                     self.proto_count[c] += 1
 
     def forward(self, input_dict):
+
+        point = Point(input_dict)
+        point.serialization(order=self.order, shuffle_orders=self.shuffle_orders)
+        point.sparsify()
+        
         # --- 1. PTv3 Backbone ---
-        point = self.embedding(input_dict) 
+        point = self.embedding(point) 
         ptv3_sparse_structure = point.sparse_conv_feat
         
         point = self.enc(point)

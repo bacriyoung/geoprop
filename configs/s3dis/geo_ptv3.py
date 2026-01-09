@@ -76,7 +76,7 @@ model = dict(
     enable_flash=True,
     upcast_attention=False,
     upcast_softmax=False,
-    cls_mode=False,
+    # cls_mode=False,
     pdnorm_bn=False,
     pdnorm_ln=False,
     pdnorm_decouple=True,
@@ -99,7 +99,7 @@ optimizer = dict(
 
 scheduler = dict(
     type="OneCycleLR",
-    max_lr=[lr, lr * 0.1], # [Head, Backbone]
+    max_lr=[lr, lr * 0.1, lr], # [Head, Backbone]
     pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
