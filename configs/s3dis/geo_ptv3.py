@@ -142,7 +142,7 @@ data = dict(
         num_points=180000, 
         voxel_size=0.02,
         test_mode=True,   
-        stride=2.0,       
+        stride=4.0,       
         transform=None,
         loop=1,  
     ),

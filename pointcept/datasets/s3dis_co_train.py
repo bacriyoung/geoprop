@@ -24,6 +24,7 @@ class S3DISCoTrainDataset(Dataset):
                  hash_seed_3=69232043,
                  # Stride for sliding window, smaller means higher overlap/accuracy
                  stride=0.5,
+                 scan_mode='xyz',
                  **kwargs): 
         self.data_root = data_root
         self.split = split
@@ -34,6 +35,7 @@ class S3DISCoTrainDataset(Dataset):
         self.logger = get_root_logger()
         self.labeled_ratio = labeled_ratio
         self.stride = stride
+        self.scan_mode = scan_mode
         
         self.h1_k = int(hash_seed_1)
         self.h2_k = int(hash_seed_2)
@@ -121,25 +123,34 @@ class S3DISCoTrainDataset(Dataset):
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
 
         # ==================================================================
-        # Test/Val Mode: Dense Sliding KNN Window (3-Axis XYZ Scan)
+        # Test/Val Mode: Dense Sliding KNN Window (Dual Mode: XY / XYZ)
         # ==================================================================
         else:
             fragment_list = []
             coord_min = np.min(coord, axis=0)
             coord_max = np.max(coord, axis=0)
 
-            # [New] Initialize a mask to track which points have been visited
+            # Initialize a mask to track which points have been visited
             visited_mask = np.zeros(coord.shape[0], dtype=bool)
             
-            # [Modified] 3-Axis Scanning Logic
-            # We use the same stride for X, Y, and Z. 
-            # Note: For Z-axis, you might want a finer stride if the ceiling/floor are often missed.
-            stride_x, stride_y, stride_z = self.stride, self.stride, self.stride
+            # [Modified] Unified Scanning Logic for 'xy' and 'xyz' modes
+            stride_x, stride_y = self.stride, self.stride
             
+            # Generate grids for X and Y axes
             grid_x = np.arange(coord_min[0], coord_max[0] + stride_x, stride_x)
             grid_y = np.arange(coord_min[1], coord_max[1] + stride_y, stride_y)
-            grid_z = np.arange(coord_min[2], coord_max[2] + stride_z, stride_z)
             
+            # [Modified] Branching logic for Z-axis generation based on scan_mode
+            if self.scan_mode == 'xyz':
+                # 'xyz' mode: Full 3D scanning, moves along Z axis as well
+                stride_z = self.stride
+                grid_z = np.arange(coord_min[2], coord_max[2] + stride_z, stride_z)
+            else:
+                # 'xy' mode (Default): Fix Z at the room center, scan only XY plane
+                # This is faster but might miss points near ceiling/floor if num_points is small
+                z_center = (coord_min[2] + coord_max[2]) / 2.0
+                grid_z = [z_center] # Wrap in list to make the loop generic
+
             for x in grid_x:
                 for y in grid_y:
                     for z in grid_z:
@@ -148,7 +159,7 @@ class S3DISCoTrainDataset(Dataset):
                         # Core: Get fixed-size KNN indices to match training distribution
                         indices = self.get_knn_indices(coord, center=center)
 
-                        # [New] Update coverage mask
+                        # Update coverage mask
                         visited_mask[indices] = True
                         
                         coord_chunk = coord[indices]
@@ -170,10 +181,12 @@ class S3DISCoTrainDataset(Dataset):
             uncovered_count = np.sum(~visited_mask)
             if uncovered_count > 0:
                 if self.logger is not None:
-                    self.logger.warning(
-                        f"⚠️ [Coverage Check] {uncovered_count} points ({uncovered_count/len(coord):.2%}) "
-                        f"were NOT covered by sliding windows in {os.path.basename(room_dir)}! "
-                        f"Consider decreasing 'stride' or increasing 'num_points'."
+                    # Use different log levels: Warning for XYZ (should be full coverage), Info for XY
+                    log_func = self.logger.warning if self.scan_mode == 'xyz' else self.logger.info
+                    log_func(
+                        f"[{self.scan_mode.upper()} Scan] {uncovered_count} points "
+                        f"({uncovered_count/len(coord):.2%}) were NOT covered by sliding windows in {os.path.basename(room_dir)}! "
+                        f"Consider decreasing 'stride' or switching to 'xyz' mode."
                     )
 
             # Returns scene-level dict, compatible with SemSegTester.test() logic
