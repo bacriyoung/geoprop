@@ -186,7 +186,7 @@ class S3DISCoTrainDataset(Dataset):
                     log_func(
                         f"[{self.scan_mode.upper()} Scan] {uncovered_count} points "
                         f"({uncovered_count/len(coord):.2%}) were NOT covered by sliding windows in {os.path.basename(room_dir)}! "
-                        f"Consider decreasing 'stride' or switching to 'xyz' mode."
+                        f"Consider decreasing 'stride' or switching scan mode."
                     )
 
             # Returns scene-level dict, compatible with SemSegTester.test() logic
