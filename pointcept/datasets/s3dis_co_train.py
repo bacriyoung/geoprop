@@ -45,7 +45,7 @@ class S3DISCoTrainDataset(Dataset):
             self.loop = 30
         else:
             self.loop = loop
-            
+
         self.raw_room_list = self.get_file_list()
         
         # Build Data List
@@ -121,42 +121,60 @@ class S3DISCoTrainDataset(Dataset):
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
 
         # ==================================================================
-        # Test/Val Mode: Dense Sliding KNN Window
-        # This part ensures we cover the whole scene with chunks similar to training
+        # Test/Val Mode: Dense Sliding KNN Window (3-Axis XYZ Scan)
         # ==================================================================
         else:
             fragment_list = []
             coord_min = np.min(coord, axis=0)
             coord_max = np.max(coord, axis=0)
+
+            # [New] Initialize a mask to track which points have been visited
+            visited_mask = np.zeros(coord.shape[0], dtype=bool)
             
-            # Use fixed Z center to allow KNN to pick points across the floor-to-ceiling range
-            z_center = (coord_min[2] + coord_max[2]) / 2.0
+            # [Modified] 3-Axis Scanning Logic
+            # We use the same stride for X, Y, and Z. 
+            # Note: For Z-axis, you might want a finer stride if the ceiling/floor are often missed.
+            stride_x, stride_y, stride_z = self.stride, self.stride, self.stride
             
-            # Generate grid centers for sliding windows
-            grid_x = np.arange(coord_min[0], coord_max[0] + self.stride, self.stride)
-            grid_y = np.arange(coord_min[1], coord_max[1] + self.stride, self.stride)
+            grid_x = np.arange(coord_min[0], coord_max[0] + stride_x, stride_x)
+            grid_y = np.arange(coord_min[1], coord_max[1] + stride_y, stride_y)
+            grid_z = np.arange(coord_min[2], coord_max[2] + stride_z, stride_z)
             
             for x in grid_x:
                 for y in grid_y:
-                    center = np.array([x, y, z_center])
-                    
-                    # Core: Get fixed-size KNN indices to match training distribution
-                    indices = self.get_knn_indices(coord, center=center)
-                    
-                    coord_chunk = coord[indices]
-                    color_chunk = color[indices]
-                    segment_chunk = segment[indices]
-                    
-                    # Normalize and wrap into dict
-                    # is_test_fragment=True prevents adding 'segment' to individual chunks to save GPU memory
-                    chunk_dict = self.prepare_input_dict(
-                        coord_chunk, 
-                        color_chunk, 
-                        segment_chunk, 
-                        indices, 
-                        is_test_fragment=True
+                    for z in grid_z:
+                        center = np.array([x, y, z])
+                        
+                        # Core: Get fixed-size KNN indices to match training distribution
+                        indices = self.get_knn_indices(coord, center=center)
+
+                        # [New] Update coverage mask
+                        visited_mask[indices] = True
+                        
+                        coord_chunk = coord[indices]
+                        color_chunk = color[indices]
+                        segment_chunk = segment[indices]
+                        
+                        # Normalize and wrap into dict
+                        # is_test_fragment=True prevents adding 'segment' to individual chunks to save GPU memory
+                        chunk_dict = self.prepare_input_dict(
+                            coord_chunk, 
+                            color_chunk, 
+                            segment_chunk, 
+                            indices, 
+                            is_test_fragment=True
+                        )
+                        fragment_list.append(chunk_dict)
+
+            # [New] Check for uncovered points after scanning the whole scene
+            uncovered_count = np.sum(~visited_mask)
+            if uncovered_count > 0:
+                if self.logger is not None:
+                    self.logger.warning(
+                        f"⚠️ [Coverage Check] {uncovered_count} points ({uncovered_count/len(coord):.2%}) "
+                        f"were NOT covered by sliding windows in {os.path.basename(room_dir)}! "
+                        f"Consider decreasing 'stride' or increasing 'num_points'."
                     )
-                    fragment_list.append(chunk_dict)
 
             # Returns scene-level dict, compatible with SemSegTester.test() logic
             return dict(
