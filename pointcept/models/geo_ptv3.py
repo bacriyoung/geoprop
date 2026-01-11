@@ -185,50 +185,70 @@ class GeoPTV3(nn.Module):
 
     def forward(self, input_dict):
         # =========================================================================
-        # 1. Sliding Window Validation
+        # 1. Sliding Window Validation (Fixed for 2-GPU DDP Shape Mismatch)
         # =========================================================================
         if "fragment_list" in input_dict:
             # Unpack Batch (B=1)
             fragment_list = input_dict["fragment_list"][0]
             
-            # [CRITICAL] 1. Force flatten Target to (N,)
+            # Force flatten Target to (N,) for internal Loss calculation
             full_segment = input_dict["segment"].view(-1)
             
-            # [CRITICAL] 2. Defense: Overwrite input_dict target
-            input_dict["segment"] = full_segment
+            # [CRITICAL CHANGE] Do NOT overwrite input_dict["segment"] in place.
+            # In DDP, the Evaluator holds a reference to the original batch (1, N),
+            # modifying it here creates a mismatch if we flatten it to (N,).
+            # input_dict["segment"] = full_segment  <-- REMOVED
             
             num_points_total = full_segment.shape[0]
-            device = torch.cuda.current_device()
             num_classes = self.aux_head.out_features
+            
+            # Standard GPU Device
+            device = torch.cuda.current_device()
 
-            # [CRITICAL] 3. Logits container: (N, C)
+            # Initialize container on GPU
             full_logits = torch.zeros((num_points_total, num_classes), device=device)
             full_counts = torch.zeros((num_points_total, 1), device=device)
 
             for fragment in fragment_list:
+                # Move fragment data to GPU
                 for key in fragment.keys():
                     if isinstance(fragment[key], torch.Tensor):
                         fragment[key] = fragment[key].to(device)
                 
+                # Inference
                 chunk_output = self.forward(fragment)
-                chunk_logits = torch.softmax(chunk_output["seg_logits"], dim=-1)
-                global_idx = fragment["index"].long() 
                 
+                # Probabilities
+                chunk_logits = torch.softmax(chunk_output["seg_logits"], dim=-1)
+                global_idx = fragment["index"].long()
+                
+                # Accumulate
                 full_logits.index_add_(0, global_idx, chunk_logits)
                 full_counts.index_add_(0, global_idx, torch.ones_like(chunk_logits[:, :1]))
 
+            # Normalize
             full_logits /= full_counts.clamp(min=1.0)
             
-            # [NEW] Calculate REAL Val Loss (NLLLoss)
+            # Ensure target is on GPU for Loss
+            if full_segment.device != device:
+                full_segment = full_segment.to(device)
+
             val_loss = F.nll_loss(
                 torch.log(full_logits.clamp(min=1e-6)), 
-                full_segment.to(device).long(), 
+                full_segment.long(), 
                 ignore_index=255
             )
             
+            # [CRITICAL FIX] Reshape logits to match Evaluator's expected input shape
+            # Evaluator has target shape (1, N). It does pred = logits.max(1)[1].
+            # We need logits to be (1, C, N) so that max(1) yields pred of shape (1, N).
+            # Current full_logits is (N, C).
+            # Permute (N, C) -> (C, N) -> Unsqueeze (1, C, N)
+            logits_eval = full_logits.permute(1, 0).unsqueeze(0)
+            
             output_dict = {
-                "seg_logits": full_logits, # (N, C)
-                "target": full_segment.to(device).long(), # (N,)
+                "seg_logits": logits_eval,  # (1, C, N) matches Evaluator
+                "target": full_segment, 
                 "loss": val_loss
             }
             return output_dict
