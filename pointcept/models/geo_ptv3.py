@@ -114,7 +114,7 @@ class DecoupledPointJAFAR(nn.Module):
         pos_enc = self.rel_pos_mlp(rel_pos)
         
         attn_logits = torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5)
-        affinity = self.softmax(attn_logits)
+        affinity = torch.softmax(attn_logits.float(), dim=-1).type_as(attn_logits)
         
         refined_feat = torch.sum(affinity.unsqueeze(1) * V_g, dim=-1)
         refined_feat = refined_feat + V 
@@ -362,6 +362,11 @@ class GeoPTV3(nn.Module):
             valid_mask = (targets != 255)
             if valid_mask.sum() > 0:
                 self.update_prototypes(refined_feat[valid_mask].detach(), targets[valid_mask])
+            else:
+                # Create dummy empty tensors on the same device to keep DDP sync happy
+                dummy_feat = torch.zeros((0, refined_feat.shape[-1]), device=refined_feat.device)
+                dummy_label = torch.zeros((0,), dtype=torch.long, device=targets.device)
+                self.update_prototypes(dummy_feat, dummy_label)
 
         output_dict = {
             "seg_logits": refined_logits,

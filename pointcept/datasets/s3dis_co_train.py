@@ -119,9 +119,18 @@ class S3DISCoTrainDataset(Dataset):
                 coord_c *= scale
                 if np.random.random() > 0.5: coord_c[:, 0] = -coord_c[:, 0]
                 if np.random.random() > 0.5: coord_c[:, 1] = -coord_c[:, 1]
+                
+                if np.random.random() < 0.5:
+                    # Add random noise (jitter) and scale (contrast)
+                    noise = np.random.randn(1).astype(np.float32)
+                    color_c = color_c * (1 + 0.1 * noise) + 0.1 * np.random.randn(1).astype(np.float32)
+            
+                # Color Drop
+                # Randomly drop color (set to 0) to force the model to look at XYZ geometry.
+                if np.random.random() < 0.2:
+                    color_c[:] = 0.0
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
-
         # ==================================================================
         # Test/Val Mode: Dense Sliding KNN Window (Dual Mode: XY / XYZ)
         # ==================================================================
