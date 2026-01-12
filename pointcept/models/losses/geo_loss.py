@@ -6,8 +6,8 @@ from .builder import LOSSES
 @LOSSES.register_module()
 class GeoCoTrainLoss(nn.Module):
     def __init__(self, 
-                 lambda_main=1.0,   #  Weight for Refined Logits (JAFAR/Final)
-                 lambda_aux=1.0,    #  Weight for Aux Logits (PTv3/Backbone)
+                 lambda_main=1.0,   # Weight for Refined Logits (JAFAR/Final)
+                 lambda_aux=1.0,    # Weight for Aux Logits (PTv3/Backbone)
                  lambda_aff=0.1,    
                  lambda_dist=0.1,   
                  lambda_bdy=0.5,    
@@ -24,7 +24,7 @@ class GeoCoTrainLoss(nn.Module):
         self.lambda_bdy = lambda_bdy
         self.ignore_index = ignore_index
         
-        # [MODIFIED] Weighted Cross Entropy
+        # Weighted Cross Entropy
         # Handle class imbalance for weak supervision
         if class_weights is not None:
             self.register_buffer('class_weights', torch.tensor(class_weights))
@@ -34,7 +34,7 @@ class GeoCoTrainLoss(nn.Module):
 
         self.bce = nn.BCEWithLogitsLoss()
 
-        # [New] Dynamic Weighting State
+        # Dynamic Weighting State
         # Register a buffer to track iterations (automatically saved/loaded with checkpoint)
         self.register_buffer('iter_step', torch.tensor(0, dtype=torch.long))
         # Estimate warmup steps: e.g., warmup_epochs * 500 steps per epoch
@@ -44,15 +44,17 @@ class GeoCoTrainLoss(nn.Module):
     def forward(self, output_dict):
         target = output_dict['target']
         
-        # [New] Update Iteration Step & Calculate Dynamic Alpha
+        # Update Iteration Step
         if self.training:
             self.iter_step += 1
         
-        # Calculate alpha: grows linearly from 0.0 to 1.0 during warmup
+        # [OPTIMIZATION] Calculate alpha entirely on GPU to avoid CPU sync
+        # Removed .item() which caused the slowdown
         if self.warmup_steps > 0:
-            alpha = min(1.0, self.iter_step.item() / float(self.warmup_steps))
+            step_ratio = self.iter_step.float() / float(self.warmup_steps)
+            alpha = torch.clamp(step_ratio, max=1.0)
         else:
-            alpha = 1.0
+            alpha = torch.tensor(1.0, device=target.device)
 
         # 1. Dual Supervision (Refined + Aux)
         # -----------------------------------------------------------
@@ -93,7 +95,7 @@ class GeoCoTrainLoss(nn.Module):
             # Similarity Matrix [N, NumClasses]
             sim_matrix = torch.mm(feat_norm, prototypes_norm.t())
             
-            # [New] Generate Pseudo-Labels for Unlabeled Points
+            # Generate Pseudo-Labels for Unlabeled Points
             # -------------------------------------------------
             # 1. Get predictions confidence
             with torch.no_grad():
@@ -128,15 +130,13 @@ class GeoCoTrainLoss(nn.Module):
         # -----------------------------------------------------------
         feat_inp = output_dict['input_jafar_feat'] 
         
-        # [MODIFIED] De-coloring / Pure Geometric Boundary
-        # feat_inp contains [GeoBlobs (9) | Color (3)].
-        # We slice [:, :, :9] to use ONLY geometry for boundary detection.
-        # This prevents the network from cheating by learning texture edges.
-        feat_geo_only = feat_inp[:, :, :9] 
+        # [REVERTED] Use FULL features (Geometry + Color)
+        # Reason: Color gradients ARE boundaries. Removed slicing to avoid memory copy.
+        # Direct view is zero-copy if tensor is contiguous (usually is).
+        feat_inp_flat = feat_inp.view(B*N, -1)
         
-        feat_inp_flat = feat_geo_only.contiguous().view(B*N, -1)
         neighbor_inp = feat_inp_flat[k_idx_flat].view(B, N, K, -1)
-        center_inp = feat_geo_only.view(B, N, -1).unsqueeze(2).expand(-1, -1, K, -1)
+        center_inp = feat_inp.view(B, N, -1).unsqueeze(2).expand(-1, -1, K, -1)
         
         joint_diff = torch.norm(center_inp - neighbor_inp, dim=-1)
         edge_score_pseudo = joint_diff.mean(dim=-1)
