@@ -65,7 +65,7 @@ class DecoupledPointJAFAR(nn.Module):
         self.geo_query = nn.Conv1d(qk_dim, qk_dim, 1)
         self.geo_key = nn.Conv1d(qk_dim, qk_dim, 1)
         self.rel_pos_mlp = nn.Sequential(
-            nn.Conv2d(3, qk_dim, 1), 
+            nn.Conv2d(7, qk_dim, 1), 
             nn.GroupNorm(8, qk_dim), 
             nn.ReLU(),
             nn.Conv2d(qk_dim, qk_dim, 1)
@@ -110,8 +110,24 @@ class DecoupledPointJAFAR(nn.Module):
         K_g = self._gather_val_efficient(K, knn_idx)
         xyz_g = self._gather_val_efficient(xyz_t, knn_idx)
         V_g = self._gather_val_efficient(V, knn_idx)
-        rel_pos = xyz_t.unsqueeze(-1) - xyz_g
-        pos_enc = self.rel_pos_mlp(rel_pos)
+        
+        # [MODIFIED] Full Explicit Geometric Encoding
+        # 1. Relative Coordinates (dx, dy, dz) [B, 3, N, K]
+        rel_diff = xyz_t.unsqueeze(-1) - xyz_g
+        
+        # 2. Euclidean Distance (d) [B, 1, N, K]
+        # clamp(min=1e-8) prevents division by zero and NaN gradients
+        rel_dist = torch.norm(rel_diff, dim=1, keepdim=True).clamp(min=1e-8)
+        
+        # 3. Direction Cosines / Angles [B, 3, N, K]
+        # Represents geometric orientation (Azimuth/Altitude info)
+        rel_direction = rel_diff / rel_dist
+        
+        # 4. Concatenate all geometric priors -> 7 channels
+        rel_geo_feat = torch.cat([rel_diff, rel_dist, rel_direction], dim=1)
+        
+        # 5. Feed to MLP
+        pos_enc = self.rel_pos_mlp(rel_geo_feat)
         
         attn_logits = torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5)
         affinity = torch.softmax(attn_logits.float(), dim=-1).type_as(attn_logits)
