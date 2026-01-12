@@ -79,14 +79,6 @@ class DecoupledPointJAFAR(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.cls_head = nn.Linear(qk_dim, num_classes)
 
-        # [NEW] Output Projection with Zero Initialization
-        # Instead of a Gate, use a linear layer initialized to zero.
-        # Step 0: Output is strictly 0. Model acts like pure PTv3.
-        # Step T: Weights grow if geometry reduces loss.
-        self.out_proj = nn.Conv1d(qk_dim, qk_dim, 1)
-        nn.init.zeros_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
-
     def _gather_val_efficient(self, tensor, idx):
         b_dim, c_dim, n_dim = tensor.shape
         _, _, k_dim = idx.shape
@@ -119,22 +111,29 @@ class DecoupledPointJAFAR(nn.Module):
         xyz_g = self._gather_val_efficient(xyz_t, knn_idx)
         V_g = self._gather_val_efficient(V, knn_idx)
         
-        # [Explicit Geometric Encoding Logic from Previous Step]
+        # [MODIFIED] Full Explicit Geometric Encoding
+        # 1. Relative Coordinates (dx, dy, dz) [B, 3, N, K]
         rel_diff = xyz_t.unsqueeze(-1) - xyz_g
+        
+        # 2. Euclidean Distance (d) [B, 1, N, K]
+        # clamp(min=1e-8) prevents division by zero and NaN gradients
         rel_dist = torch.norm(rel_diff, dim=1, keepdim=True).clamp(min=1e-8)
+        
+        # 3. Direction Cosines / Angles [B, 3, N, K]
+        # Represents geometric orientation (Azimuth/Altitude info)
         rel_direction = rel_diff / rel_dist
+        
+        # 4. Concatenate all geometric priors -> 7 channels
         rel_geo_feat = torch.cat([rel_diff, rel_dist, rel_direction], dim=1)
+        
+        # 5. Feed to MLP
         pos_enc = self.rel_pos_mlp(rel_geo_feat)
         
         attn_logits = torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5)
         affinity = torch.softmax(attn_logits.float(), dim=-1).type_as(attn_logits)
         
-        # Calculate the geometric refinement delta
-        refined_feat_delta = torch.sum(affinity.unsqueeze(1) * V_g, dim=-1)
-        
-        # Final = Original + ZeroInit_Proj(Refinement)
-        refined_feat = V + self.out_proj(refined_feat_delta)
-        
+        refined_feat = torch.sum(affinity.unsqueeze(1) * V_g, dim=-1)
+        refined_feat = refined_feat + V 
         refined_feat_flat = refined_feat.transpose(1, 2).contiguous().view(-1, self.qk_dim)
         logits = self.cls_head(refined_feat_flat)
         return logits, affinity, knn_idx, refined_feat_flat, bdy_logits
