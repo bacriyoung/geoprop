@@ -12,7 +12,8 @@ class GeoCoTrainLoss(nn.Module):
                  lambda_dist=0.1,   
                  lambda_bdy=0.5,    
                  warmup_epochs=0,   # Reserved parameter for potential future scheduling
-                 ignore_index=255):
+                 ignore_index=255,
+                 class_weights=None):
         super().__init__()
         
         self.lambda_main = lambda_main 
@@ -23,7 +24,14 @@ class GeoCoTrainLoss(nn.Module):
         self.lambda_bdy = lambda_bdy
         self.ignore_index = ignore_index
         
-        self.ce = nn.CrossEntropyLoss(ignore_index=ignore_index)
+        # [MODIFIED] Weighted Cross Entropy
+        # Handle class imbalance for weak supervision
+        if class_weights is not None:
+            self.register_buffer('class_weights', torch.tensor(class_weights))
+            self.ce = nn.CrossEntropyLoss(weight=self.class_weights, ignore_index=ignore_index)
+        else:
+            self.ce = nn.CrossEntropyLoss(ignore_index=ignore_index)
+
         self.bce = nn.BCEWithLogitsLoss()
 
         # [New] Dynamic Weighting State
@@ -119,9 +127,16 @@ class GeoCoTrainLoss(nn.Module):
         # 4. Boundary Loss
         # -----------------------------------------------------------
         feat_inp = output_dict['input_jafar_feat'] 
-        feat_inp_flat = feat_inp.view(B*N, -1)
+        
+        # [MODIFIED] De-coloring / Pure Geometric Boundary
+        # feat_inp contains [GeoBlobs (9) | Color (3)].
+        # We slice [:, :, :9] to use ONLY geometry for boundary detection.
+        # This prevents the network from cheating by learning texture edges.
+        feat_geo_only = feat_inp[:, :, :9] 
+        
+        feat_inp_flat = feat_geo_only.contiguous().view(B*N, -1)
         neighbor_inp = feat_inp_flat[k_idx_flat].view(B, N, K, -1)
-        center_inp = feat_inp.unsqueeze(2).expand(-1, -1, K, -1)
+        center_inp = feat_geo_only.view(B, N, -1).unsqueeze(2).expand(-1, -1, K, -1)
         
         joint_diff = torch.norm(center_inp - neighbor_inp, dim=-1)
         edge_score_pseudo = joint_diff.mean(dim=-1)
@@ -130,8 +145,6 @@ class GeoCoTrainLoss(nn.Module):
         pred_bdy_logits = output_dict['bdy_logits'].squeeze(1)
         loss_bdy = self.bce(pred_bdy_logits, target_bdy.detach())
 
-        # Total Loss with Dynamic Weighting
-        # Scale lambda_aff by alpha (0 -> 1 during warmup)
         return loss_sup + \
                loss_aff * (self.lambda_aff * alpha) + \
                loss_dist * self.lambda_dist + \

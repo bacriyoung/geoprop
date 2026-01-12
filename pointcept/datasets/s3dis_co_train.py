@@ -19,9 +19,9 @@ class S3DISCoTrainDataset(Dataset):
                  test_mode=False,
                  loop=1,
                  labeled_ratio=0.001,
-                 hash_seed_1=57361723,
-                 hash_seed_2=92990218,
-                 hash_seed_3=69232043,
+                 hash_seed_1=97734336,
+                 hash_seed_2=60478499,
+                 hash_seed_3=43328003,
                  # Stride for sliding window, smaller means higher overlap/accuracy
                  stride=0.5,
                  scan_mode='xyz',

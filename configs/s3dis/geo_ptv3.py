@@ -39,11 +39,16 @@ model = dict(
         type="GeoCoTrainLoss", 
         lambda_main=10.0, 
         lambda_aux=4.0,   
-        lambda_aff=1.0, 
+        lambda_aff=0.5, 
         lambda_dist=0.1,
         lambda_bdy=0.1,
         warmup_epochs=5, 
-        ignore_index=ignore_index
+        ignore_index=ignore_index,
+        # S3DIS: Ceiling/Floor/Wall are dominant, Beam/Column are rare.
+        class_weights=[
+            1.0, 1.0, 1.0, 1.2, 1.2, 1.1, 1.1,  # ceiling, floor, wall, beam, column, window, door
+            1.1, 1.0, 1.0, 1.2, 1.1, 1.0        # table, chair, sofa, bookcase, board, clutter
+        ]
     ),
     backbone_ptv3_cfg=dict(
         type="PointTransformerV3",
