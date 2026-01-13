@@ -116,8 +116,8 @@ class DecoupledPointJAFAR(nn.Module):
         rel_diff = xyz_t.unsqueeze(-1) - xyz_g
         
         # 2. Euclidean Distance (d) [B, 1, N, K]
-        # clamp(min=1e-8) prevents division by zero and NaN gradients
-        rel_dist = torch.norm(rel_diff, dim=1, keepdim=True).clamp(min=1e-8)
+        sq_sum = torch.sum(rel_diff ** 2, dim=1, keepdim=True)
+        rel_dist = torch.sqrt(sq_sum + 1e-6)
         
         # 3. Direction Cosines / Angles [B, 3, N, K]
         # Represents geometric orientation (Azimuth/Altitude info)
