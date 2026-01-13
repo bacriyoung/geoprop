@@ -25,6 +25,7 @@ class S3DISCoTrainDataset(Dataset):
                  # Stride for sliding window, smaller means higher overlap/accuracy
                  stride=0.5,
                  scan_mode='xyz',
+                 tta_conf=None,
                  **kwargs): 
         self.data_root = data_root
         self.split = split
@@ -36,7 +37,13 @@ class S3DISCoTrainDataset(Dataset):
         self.labeled_ratio = labeled_ratio
         self.stride = stride
         self.scan_mode = scan_mode
-        
+
+        # [NEW] Initialize TTA Config
+        self.tta_conf = tta_conf if tta_conf is not None else dict(enable=False)
+        if self.test_mode and self.tta_conf.get('enable'):
+            if self.logger:
+                self.logger.info(f"[{self.split}] TTA Enabled with strategy: {self.tta_conf}")
+
         self.h1_k = int(hash_seed_1)
         self.h2_k = int(hash_seed_2)
         self.h3_k = int(hash_seed_3)
@@ -159,6 +166,26 @@ class S3DISCoTrainDataset(Dataset):
                 # This is faster but might miss points near ceiling/floor if num_points is small
                 z_center = (coord_min[2] + coord_max[2]) / 2.0
                 grid_z = [z_center] # Wrap in list to make the loop generic
+            
+            # [NEW] Generate TTA Transform List based on Config
+            # Always include Identity (Original View)
+            transforms_to_apply = [dict(scale=1.0, flip_x=False, flip_y=False, rot_z=0)]
+            
+            if self.tta_conf.get('enable'):
+                # 1. Scale TTA
+                for s in self.tta_conf.get('scale_list', []):
+                    transforms_to_apply.append(dict(scale=s, flip_x=False, flip_y=False, rot_z=0))
+                
+                # 2. Flip TTA
+                if self.tta_conf.get('flip_x'):
+                    transforms_to_apply.append(dict(scale=1.0, flip_x=True, flip_y=False, rot_z=0))
+                if self.tta_conf.get('flip_y'):
+                    transforms_to_apply.append(dict(scale=1.0, flip_x=False, flip_y=True, rot_z=0))
+                
+                # 3. Rotation TTA (90, 180, 270)
+                if self.tta_conf.get('rot_z'):
+                    for k in [1, 2, 3]: # 90*k degrees
+                        transforms_to_apply.append(dict(scale=1.0, flip_x=False, flip_y=False, rot_z=k))
 
             for x in grid_x:
                 for y in grid_y:
@@ -174,17 +201,44 @@ class S3DISCoTrainDataset(Dataset):
                         coord_chunk = coord[indices]
                         color_chunk = color[indices]
                         segment_chunk = segment[indices]
+
+                        # [NEW] Apply TTA Transforms Loop
+                        # Instead of one chunk, we generate multiple chunks (views) for the SAME indices.
+                        # The model's index_add_ logic will effectively sum their logits (Voting).
+                        # [NEW] Apply TTA Transforms Loop
+                        for t_cfg in transforms_to_apply:
+                            coord_aug = coord_base.copy()
+                            
+                            
+                            # A. Rotate
+                            rot_k = t_cfg.get('rot_z', 0) 
+                            if rot_k > 0:
+                                angle = rot_k * np.pi / 2
+                                c, s = np.cos(angle), np.sin(angle)
+                                R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+                                coord_aug = coord_aug @ R.T
+                            
+                            # B. Scale
+                            scale_val = t_cfg.get('scale', 1.0) 
+                            if scale_val != 1.0:
+                                coord_aug *= scale_val
+                                
+                            # C. Flip
+                            if t_cfg.get('flip_x', False): 
+                                coord_aug[:, 0] = -coord_aug[:, 0]
+                            if t_cfg.get('flip_y', False): 
+                                coord_aug[:, 1] = -coord_aug[:, 1]
                         
-                        # Normalize and wrap into dict
-                        # is_test_fragment=True prevents adding 'segment' to individual chunks to save GPU memory
-                        chunk_dict = self.prepare_input_dict(
-                            coord_chunk, 
-                            color_chunk, 
-                            segment_chunk, 
-                            indices, 
-                            is_test_fragment=True
-                        )
-                        fragment_list.append(chunk_dict)
+                            # Normalize and wrap into dict
+                            # is_test_fragment=True prevents adding 'segment' to individual chunks to save GPU memory
+                            chunk_dict = self.prepare_input_dict(
+                                coord_aug,      # Transformed coordinates
+                                color_chunk, 
+                                segment_chunk, 
+                                indices,        # Shared Global Indices (Key for Voting)
+                                is_test_fragment=True
+                            )
+                            fragment_list.append(chunk_dict)
 
             # [New] Check for uncovered points after scanning the whole scene
             uncovered_count = np.sum(~visited_mask)

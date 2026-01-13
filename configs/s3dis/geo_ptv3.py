@@ -151,6 +151,13 @@ data = dict(
         stride=4.0,       
         transform=None,
         loop=1,  
+        tta_conf=dict(
+            enable=False,            
+            scale_list=[0.9, 0.95, 1.05, 1.1], 
+            flip_x=True,            
+            flip_y=True,           
+            rot_z=True              
+        )
     ),
 
     # -------------------------------------------------------------
@@ -165,6 +172,13 @@ data = dict(
         test_mode=True, 
         stride=2.0,       
         transform=None,   
+        tta_conf=dict(
+            enable=True, 
+            scale_list=[0.9, 0.95, 1.05, 1.1],
+            flip_x=True, 
+            flip_y=True, 
+            rot_z=True
+        )
     ),
 )
 
