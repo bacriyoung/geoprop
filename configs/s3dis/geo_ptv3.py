@@ -42,7 +42,7 @@ model = dict(
         lambda_aff=0.5, 
         lambda_dist=0.1,
         lambda_bdy=0.1,
-        warmup_epochs=5, 
+        warmup_epochs=10, 
         ignore_index=ignore_index,
         # S3DIS: Ceiling/Floor/Wall are dominant, Beam/Column are rare.
         class_weights=[

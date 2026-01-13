@@ -207,7 +207,7 @@ class S3DISCoTrainDataset(Dataset):
                         # The model's index_add_ logic will effectively sum their logits (Voting).
                         # [NEW] Apply TTA Transforms Loop
                         for t_cfg in transforms_to_apply:
-                            coord_aug = coord_base.copy()
+                            coord_aug = coord_chunk.copy()
                             
                             
                             # A. Rotate
