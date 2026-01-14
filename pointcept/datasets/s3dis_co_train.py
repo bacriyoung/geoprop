@@ -134,8 +134,8 @@ class S3DISCoTrainDataset(Dataset):
             
                 # Color Drop
                 # Randomly drop color (set to 0) to force the model to look at XYZ geometry.
-                if np.random.random() < 0.2:
-                    color_c[:] = 0.0
+                # if np.random.random() < 0.2:
+                #     color_c[:] = 0.0
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
         # ==================================================================

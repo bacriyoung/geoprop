@@ -6,13 +6,13 @@ from .builder import LOSSES
 @LOSSES.register_module()
 class GeoCoTrainLoss(nn.Module):
     def __init__(self, 
-                 lambda_main=1.0,   # Weight for Refined Logits (JAFAR/Final)
-                 lambda_aux=1.0,    # Weight for Aux Logits (PTv3/Backbone)
+                 lambda_main=1.0,   
+                 lambda_aux=1.0,    
                  lambda_aff=0.5,
                  lambda_rec=1.0,    
                  lambda_dist=0.1,   
                  lambda_bdy=0.1,    
-                 warmup_epochs=0,   # Reserved parameter for potential future scheduling
+                 warmup_epochs=0,   
                  ignore_index=255,
                  class_weights=None):
         super().__init__()
@@ -25,8 +25,6 @@ class GeoCoTrainLoss(nn.Module):
         self.lambda_bdy = lambda_bdy
         self.ignore_index = ignore_index
         
-        # Weighted Cross Entropy
-        # Handle class imbalance for weak supervision
         if class_weights is not None:
             self.register_buffer('class_weights', torch.tensor(class_weights))
             self.ce = nn.CrossEntropyLoss(weight=self.class_weights, ignore_index=ignore_index)
@@ -36,11 +34,7 @@ class GeoCoTrainLoss(nn.Module):
         self.bce = nn.BCEWithLogitsLoss()
         self.mse = nn.MSELoss()
 
-        # Dynamic Weighting State
-        # Register a buffer to track iterations (automatically saved/loaded with checkpoint)
         self.register_buffer('iter_step', torch.tensor(0, dtype=torch.long))
-        # Estimate warmup steps: e.g., warmup_epochs * 500 steps per epoch
-        # This controls how fast lambda_aff grows from 0 to its full value.
         self.warmup_steps = warmup_epochs * 500
 
     def forward(self, output_dict):
@@ -50,8 +44,6 @@ class GeoCoTrainLoss(nn.Module):
         if self.training:
             self.iter_step += 1
         
-        # [OPTIMIZATION] Calculate alpha entirely on GPU to avoid CPU sync
-        # Removed .item() which caused the slowdown
         if self.warmup_steps > 0:
             step_ratio = self.iter_step.float() / float(self.warmup_steps)
             alpha = torch.clamp(step_ratio, max=1.0)
@@ -64,7 +56,7 @@ class GeoCoTrainLoss(nn.Module):
         loss_aux = self.ce(output_dict['aux_logits'], target)
         loss_sup = self.lambda_main * loss_main + self.lambda_aux * loss_aux
         
-        # 2. Affinity Loss (Soft-Thresholding)
+        # 2. Affinity Loss (Weighted Cosine with NaN Protection)
         # -----------------------------------------------------------
         feat = output_dict['refined_feat'].float() 
         affinity = output_dict['affinity'].float()
@@ -73,8 +65,8 @@ class GeoCoTrainLoss(nn.Module):
         B, N, K = k_idx.shape
         C = feat.shape[-1]
         
-        # Normalize features for Cosine Distance (Safe in FP32)
-        feat_norm = F.normalize(feat, p=2, dim=-1)
+        # [FIX] Stronger eps (1e-6) to prevent NaN if feat is zero-vector
+        feat_norm = F.normalize(feat, p=2, dim=-1, eps=1e-6)
         
         batch_offset = torch.arange(B, device=k_idx.device).view(B, 1, 1) * N
         k_idx_flat = (k_idx + batch_offset).view(-1)
@@ -83,83 +75,73 @@ class GeoCoTrainLoss(nn.Module):
         neighbor_feat = feat_flat[k_idx_flat].view(B, N, K, C)
         center_feat = feat_norm.view(B, N, C).unsqueeze(2) # (B, N, 1, C)
         
-        # Weighted Cosine Logic (Middle Strategy)
-        # Cosine Dist = 1 - CosSim. Range [0, 2].
-        cos_dist = 1.0 - torch.sum(center_feat * neighbor_feat, dim=-1)
+        # [FIX] Clamp cosine similarity to [-1, 1] before subtracting
+        # Floating point errors can cause sum > 1.0, leading to negative distance if using acos, 
+        # or instability in gradients.
+        cos_sim = torch.sum(center_feat * neighbor_feat, dim=-1)
+        cos_dist = 1.0 - torch.clamp(cos_sim, min=-1.0, max=1.0)
         
-        # Detach affinity to use it purely as a weight (Confidence)
         aff_weight = affinity.detach()
         loss_aff = torch.sum(aff_weight * cos_dist) / (torch.sum(aff_weight) + 1e-6)
 
-        # [INSERT] New Block: Reconstruction Loss (Upper Strategy)
+        # 3. Reconstruction Loss (Upper Strategy)
         # -----------------------------------------------------------
         loss_rec = torch.tensor(0.0, device=target.device)
         if 'rec_phys' in output_dict and 'target_phys' in output_dict:
-            # Force FP32
             rec_pred = output_dict['rec_phys'].float()
             rec_target = output_dict['target_phys'].float()
+            
+            # [FIX] Clamp predictions to prevent huge MSE gradients in early training
+            # Target is normalized [0, 1] or close to it. +/- 10 is a safe bound.
+            rec_pred = torch.clamp(rec_pred, min=-10.0, max=10.0)
+            
             loss_rec = self.mse(rec_pred, rec_target)
 
-        # 3. Distribution Loss (Prototype Alignment with Pseudo-Labels)
+        # 4. Distribution Loss (Prototypes)
         # -----------------------------------------------------------
         loss_dist = torch.tensor(0.0, device=target.device)
         if 'prototypes' in output_dict:
-            prototypes = output_dict['prototypes']
+            prototypes = output_dict['prototypes'].float()
+            feat_flat_raw = output_dict['refined_feat'].view(B*N, C).float()
             
-            feat_norm = F.normalize(feat_flat, p=2, dim=1, eps=1e-6)
+            # [FIX] Stronger eps
+            feat_norm_p = F.normalize(feat_flat_raw, p=2, dim=1, eps=1e-6)
             prototypes_norm = F.normalize(prototypes, p=2, dim=1, eps=1e-6)
             
-            # Similarity Matrix [N, NumClasses]
-            sim_matrix = torch.mm(feat_norm, prototypes_norm.t())
+            sim_matrix = torch.mm(feat_norm_p, prototypes_norm.t())
             
-            # Generate Pseudo-Labels for Unlabeled Points
-            # -------------------------------------------------
-            # 1. Get predictions confidence
             with torch.no_grad():
-                # Use refined_logits for pseudo-labeling
                 probs = torch.softmax(output_dict['refined_logits'].float(), dim=1)
                 max_probs, pseudo_labels = torch.max(probs, dim=1)
-                
-                # Criteria: Point is unlabeled (255) AND Confidence > 0.9
                 pseudo_mask = (target == self.ignore_index) & (max_probs > 0.9)
 
-            # 2. Combine GT and Pseudo-Labels mask
             gt_mask = (target != self.ignore_index)
             valid_mask = gt_mask | pseudo_mask
             
             if valid_mask.sum() > 0:
-                # Select similarities for valid points
                 valid_sim = sim_matrix[valid_mask]
-                
-                # Construct mixed target: Copy GT, then fill in Pseudo-Labels
                 mixed_target = target.clone()
                 mixed_target[pseudo_mask] = pseudo_labels[pseudo_mask]
-                
-                # Get the final target class indices for the valid subset
                 valid_target_indices = mixed_target[valid_mask]
-                
-                # Maximize similarity to the target prototype (GT or Pseudo)
-                # gather retrieves the score corresponding to the target class
                 target_sim = valid_sim.gather(1, valid_target_indices.unsqueeze(1)).squeeze()
                 loss_dist = torch.mean(1.0 - target_sim)
 
-        # 4. Boundary Loss
+        # 5. Boundary Loss (Robust Normalization)
         # -----------------------------------------------------------
-        # Force FP32
         feat_inp = output_dict['input_jafar_feat'].float()
         
-        # [CRITICAL FIX] L2 Normalize input features first!
-        # This makes the Euclidean distance scale-invariant and bounded [0, 2].
-        # Thus, the threshold 0.15 becomes physically meaningful and robust.
-        feat_inp = F.normalize(feat_inp, p=2, dim=-1)
+        # [CRITICAL FIX] Use eps=1e-6.
+        # Even without Color Drop, flat geometry + dark textures can yield near-zero vectors.
+        feat_inp = F.normalize(feat_inp, p=2, dim=-1, eps=1e-6)
         
         feat_inp_flat = feat_inp.view(B*N, -1)
         neighbor_inp = feat_inp_flat[k_idx_flat].view(B, N, K, -1)
         center_inp = feat_inp.view(B, N, -1).unsqueeze(2).expand(-1, -1, K, -1)
         
-        # Calculate Distance in FP32
         diff_sq = (center_inp - neighbor_inp) ** 2
-        joint_diff = torch.sqrt(diff_sq.sum(dim=-1) + 1e-8) # eps=1e-8 for float32
+        
+        # [FIX] Increase eps inside sqrt. 1e-8 is too small for stability in some cases.
+        joint_diff = torch.sqrt(diff_sq.sum(dim=-1) + 1e-6)
         
         edge_score_pseudo = joint_diff.mean(dim=-1)
         
