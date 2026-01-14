@@ -77,8 +77,11 @@ class GeoCoTrainLoss(nn.Module):
         
         neighbor_feat = feat_flat[k_idx_flat].view(B, N, K, C)
         center_feat = feat_to_constrain.view(B, N, C).unsqueeze(2).expand(-1, -1, K, -1)
+
+        center_feat_f32 = center_feat.float()
+        neighbor_feat_f32 = neighbor_feat.float()
         
-        feat_dist = torch.sum((center_feat - neighbor_feat) ** 2, dim=-1) / (C ** 0.5)
+        feat_dist = torch.sum((center_feat_f32 - neighbor_feat_f32) ** 2, dim=-1) / (C ** 0.5)
         
         aff_weight = F.relu(affinity - 0.5) 
         loss_aff = torch.sum(aff_weight * feat_dist) / (aff_weight.sum() + 1e-4)
@@ -100,7 +103,7 @@ class GeoCoTrainLoss(nn.Module):
             # 1. Get predictions confidence
             with torch.no_grad():
                 # Use refined_logits for pseudo-labeling
-                probs = torch.softmax(output_dict['refined_logits'], dim=1)
+                probs = torch.softmax(output_dict['refined_logits'].float(), dim=1)
                 max_probs, pseudo_labels = torch.max(probs, dim=1)
                 
                 # Criteria: Point is unlabeled (255) AND Confidence > 0.9
@@ -138,7 +141,8 @@ class GeoCoTrainLoss(nn.Module):
         neighbor_inp = feat_inp_flat[k_idx_flat].view(B, N, K, -1)
         center_inp = feat_inp.view(B, N, -1).unsqueeze(2).expand(-1, -1, K, -1)
         
-        joint_diff = torch.norm(center_inp - neighbor_inp, dim=-1)
+        diff_sq = (center_inp - neighbor_inp) ** 2
+        joint_diff = torch.sqrt(diff_sq.sum(dim=-1) + 1e-6)
         edge_score_pseudo = joint_diff.mean(dim=-1)
         
         target_bdy = torch.sigmoid((edge_score_pseudo - 0.15) * 20)
