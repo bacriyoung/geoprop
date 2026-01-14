@@ -40,6 +40,7 @@ model = dict(
         lambda_main=10.0, 
         lambda_aux=4.0,   
         lambda_aff=0.5, 
+        lambda_rec=1.0,
         lambda_dist=0.1,
         lambda_bdy=0.1,
         warmup_epochs=10, 
@@ -90,7 +91,7 @@ model = dict(
 # Optimizer & Scheduler
 # -------------------------------------------------------------------------
 lr = 0.001 
-clip_grad = 35.0
+clip_grad = 10.0
 optimizer = dict(
     type="AdamW", 
     lr=lr, 

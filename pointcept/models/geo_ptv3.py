@@ -79,6 +79,13 @@ class DecoupledPointJAFAR(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.cls_head = nn.Linear(qk_dim, num_classes)
 
+        self.rec_head = nn.Sequential(
+            nn.Linear(qk_dim, qk_dim),
+            nn.LayerNorm(qk_dim),
+            nn.ReLU(),
+            nn.Linear(qk_dim, 6) # Output: 3 dims (XYZ) + 3 dims (RGB)
+        )
+
     def _gather_val_efficient(self, tensor, idx):
         b_dim, c_dim, n_dim = tensor.shape
         _, _, k_dim = idx.shape
@@ -136,7 +143,8 @@ class DecoupledPointJAFAR(nn.Module):
         refined_feat = refined_feat + V 
         refined_feat_flat = refined_feat.transpose(1, 2).contiguous().view(-1, self.qk_dim)
         logits = self.cls_head(refined_feat_flat)
-        return logits, affinity, knn_idx, refined_feat_flat, bdy_logits
+        rec_phys = self.rec_head(refined_feat_flat)
+        return logits, affinity, knn_idx, refined_feat_flat, bdy_logits, rec_phys
 
 # =========================================================================
 # 2. GeoPTV3 Main Model
@@ -362,7 +370,9 @@ class GeoPTV3(nn.Module):
         else:
             jafar_input = geo_blobs
         
-        refined_logits, affinity, k_idx, refined_feat, bdy_logits = self.geo_stream(
+        target_phys = j_feat_raw.contiguous().view(-1, j_feat_raw.shape[-1])
+        
+        refined_logits, affinity, k_idx, refined_feat, bdy_logits, rec_phys = self.geo_stream(
             xyz=j_coord,
             jafar_feat=jafar_input,
             sem_feat=sem_feat_dense,
@@ -394,7 +404,9 @@ class GeoPTV3(nn.Module):
             "k_idx": k_idx,
             "input_jafar_feat": jafar_input, 
             "target": targets,
-            "prototypes": self.prototypes
+            "prototypes": self.prototypes,
+            "rec_phys": rec_phys,  
+            "target_phys": target_phys  
         }
 
         if self.criteria is not None and targets is not None:

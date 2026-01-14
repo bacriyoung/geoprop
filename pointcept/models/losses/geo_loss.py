@@ -8,9 +8,10 @@ class GeoCoTrainLoss(nn.Module):
     def __init__(self, 
                  lambda_main=1.0,   # Weight for Refined Logits (JAFAR/Final)
                  lambda_aux=1.0,    # Weight for Aux Logits (PTv3/Backbone)
-                 lambda_aff=0.1,    
+                 lambda_aff=0.5,
+                 lambda_rec=1.0,    
                  lambda_dist=0.1,   
-                 lambda_bdy=0.5,    
+                 lambda_bdy=0.1,    
                  warmup_epochs=0,   # Reserved parameter for potential future scheduling
                  ignore_index=255,
                  class_weights=None):
@@ -18,8 +19,8 @@ class GeoCoTrainLoss(nn.Module):
         
         self.lambda_main = lambda_main 
         self.lambda_aux = lambda_aux   
-        
         self.lambda_aff = lambda_aff
+        self.lambda_rec = lambda_rec
         self.lambda_dist = lambda_dist
         self.lambda_bdy = lambda_bdy
         self.ignore_index = ignore_index
@@ -33,6 +34,7 @@ class GeoCoTrainLoss(nn.Module):
             self.ce = nn.CrossEntropyLoss(ignore_index=ignore_index)
 
         self.bce = nn.BCEWithLogitsLoss()
+        self.mse = nn.MSELoss()
 
         # Dynamic Weighting State
         # Register a buffer to track iterations (automatically saved/loaded with checkpoint)
@@ -64,27 +66,39 @@ class GeoCoTrainLoss(nn.Module):
         
         # 2. Affinity Loss (Soft-Thresholding)
         # -----------------------------------------------------------
-        feat_to_constrain = output_dict['refined_feat']
-        affinity = output_dict['affinity']
+        feat = output_dict['refined_feat'].float() 
+        affinity = output_dict['affinity'].float()
         k_idx = output_dict['k_idx']
         
         B, N, K = k_idx.shape
-        C = feat_to_constrain.shape[-1]
+        C = feat.shape[-1]
+        
+        # Normalize features for Cosine Distance (Safe in FP32)
+        feat_norm = F.normalize(feat, p=2, dim=-1)
         
         batch_offset = torch.arange(B, device=k_idx.device).view(B, 1, 1) * N
         k_idx_flat = (k_idx + batch_offset).view(-1)
-        feat_flat = feat_to_constrain.view(B*N, C)
         
+        feat_flat = feat_norm.view(B*N, C)
         neighbor_feat = feat_flat[k_idx_flat].view(B, N, K, C)
-        center_feat = feat_to_constrain.view(B, N, C).unsqueeze(2).expand(-1, -1, K, -1)
+        center_feat = feat_norm.view(B, N, C).unsqueeze(2) # (B, N, 1, C)
+        
+        # Weighted Cosine Logic (Middle Strategy)
+        # Cosine Dist = 1 - CosSim. Range [0, 2].
+        cos_dist = 1.0 - torch.sum(center_feat * neighbor_feat, dim=-1)
+        
+        # Detach affinity to use it purely as a weight (Confidence)
+        aff_weight = affinity.detach()
+        loss_aff = torch.sum(aff_weight * cos_dist) / (torch.sum(aff_weight) + 1e-6)
 
-        center_feat_f32 = center_feat.float()
-        neighbor_feat_f32 = neighbor_feat.float()
-        
-        feat_dist = torch.sum((center_feat_f32 - neighbor_feat_f32) ** 2, dim=-1) / (C ** 0.5)
-        
-        aff_weight = F.relu(affinity - 0.5) 
-        loss_aff = torch.sum(aff_weight * feat_dist) / (aff_weight.sum() + 1e-4)
+        # [INSERT] New Block: Reconstruction Loss (Upper Strategy)
+        # -----------------------------------------------------------
+        loss_rec = torch.tensor(0.0, device=target.device)
+        if 'rec_phys' in output_dict and 'target_phys' in output_dict:
+            # Force FP32
+            rec_pred = output_dict['rec_phys'].float()
+            rec_target = output_dict['target_phys'].float()
+            loss_rec = self.mse(rec_pred, rec_target)
 
         # 3. Distribution Loss (Prototype Alignment with Pseudo-Labels)
         # -----------------------------------------------------------
@@ -131,25 +145,30 @@ class GeoCoTrainLoss(nn.Module):
 
         # 4. Boundary Loss
         # -----------------------------------------------------------
-        feat_inp = output_dict['input_jafar_feat'] 
+        # Force FP32
+        feat_inp = output_dict['input_jafar_feat'].float()
         
-        # [REVERTED] Use FULL features (Geometry + Color)
-        # Reason: Color gradients ARE boundaries. Removed slicing to avoid memory copy.
-        # Direct view is zero-copy if tensor is contiguous (usually is).
+        # [CRITICAL FIX] L2 Normalize input features first!
+        # This makes the Euclidean distance scale-invariant and bounded [0, 2].
+        # Thus, the threshold 0.15 becomes physically meaningful and robust.
+        feat_inp = F.normalize(feat_inp, p=2, dim=-1)
+        
         feat_inp_flat = feat_inp.view(B*N, -1)
-        
         neighbor_inp = feat_inp_flat[k_idx_flat].view(B, N, K, -1)
         center_inp = feat_inp.view(B, N, -1).unsqueeze(2).expand(-1, -1, K, -1)
         
+        # Calculate Distance in FP32
         diff_sq = (center_inp - neighbor_inp) ** 2
-        joint_diff = torch.sqrt(diff_sq.sum(dim=-1) + 1e-6)
+        joint_diff = torch.sqrt(diff_sq.sum(dim=-1) + 1e-8) # eps=1e-8 for float32
+        
         edge_score_pseudo = joint_diff.mean(dim=-1)
         
         target_bdy = torch.sigmoid((edge_score_pseudo - 0.15) * 20)
-        pred_bdy_logits = output_dict['bdy_logits'].squeeze(1)
+        pred_bdy_logits = output_dict['bdy_logits'].squeeze(1).float()
         loss_bdy = self.bce(pred_bdy_logits, target_bdy.detach())
 
         return loss_sup + \
                loss_aff * (self.lambda_aff * alpha) + \
+               loss_rec * self.lambda_rec + \
                loss_dist * self.lambda_dist + \
                loss_bdy * self.lambda_bdy
