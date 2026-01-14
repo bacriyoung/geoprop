@@ -120,18 +120,23 @@ class DecoupledPointJAFAR(nn.Module):
         
         # [MODIFIED] Full Explicit Geometric Encoding
         # 1. Relative Coordinates (dx, dy, dz) [B, 3, N, K]
-        rel_diff = xyz_t.unsqueeze(-1) - xyz_g
+        xyz_t_f32 = xyz_t.float()
+        xyz_g_f32 = xyz_g.float()
+        rel_diff = xyz_t_f32.unsqueeze(-1) - xyz_g_f32
         
         # 2. Euclidean Distance (d) [B, 1, N, K]
         sq_sum = torch.sum(rel_diff ** 2, dim=1, keepdim=True)
-        rel_dist = torch.sqrt(sq_sum + 1e-6)
+        # 1e-6 is fine for forward, but we need clamp for backward stability
+        rel_dist = torch.sqrt(sq_sum + 1e-10)
         
         # 3. Direction Cosines / Angles [B, 3, N, K]
         # Represents geometric orientation (Azimuth/Altitude info)
-        rel_direction = rel_diff / rel_dist
+        rel_dist_safe = torch.clamp(rel_dist, min=1e-5)
+        rel_direction = rel_diff / rel_dist_safe
         
         # 4. Concatenate all geometric priors -> 7 channels
         rel_geo_feat = torch.cat([rel_diff, rel_dist, rel_direction], dim=1)
+        rel_geo_feat = rel_geo_feat.type_as(xyz)
         
         # 5. Feed to MLP
         pos_enc = self.rel_pos_mlp(rel_geo_feat)
