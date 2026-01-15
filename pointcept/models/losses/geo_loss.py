@@ -38,6 +38,10 @@ class GeoCoTrainLoss(nn.Module):
         self.warmup_steps = warmup_epochs * 500
 
     def forward(self, output_dict):
+        
+        if torch.isnan(output_dict['refined_logits']).any():
+            print("💀 NaN detected in output_dict['refined_logits'] entering Loss function!")
+
         target = output_dict['target']
         
         # Update Iteration Step

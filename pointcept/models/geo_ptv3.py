@@ -6,6 +6,32 @@ import inspect
 from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
+import sys
+
+# [DEBUG TOOL] NaN Detector
+def check_nan(tensor, name, stop_on_error=False):
+    if tensor is None:
+        return
+    
+    # Check for NaN or Inf
+    if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+        msg = f"🔥🔥🔥 [NaN/Inf DETECTED] in {name} | Shape: {tensor.shape} | Type: {tensor.dtype}"
+        print("\n" + "="*80)
+        print(msg)
+        
+        # Print Statistics
+        if tensor.numel() > 0:
+            print(f"    - Min: {tensor.min().item()}")
+            print(f"    - Max: {tensor.max().item()}")
+            print(f"    - Mean: {tensor.mean().item()}")
+            print(f"    - NaNs: {torch.isnan(tensor).sum().item()}")
+            print(f"    - Infs: {torch.isinf(tensor).sum().item()}")
+        
+        print("="*80 + "\n")
+        
+        if stop_on_error:
+            print("🛑 Stopping training for debugging...")
+            sys.exit(1) # Force exit to view logs immediately
 
 # =========================================================================
 # 0. GBlobs Utilities
@@ -86,6 +112,9 @@ class DecoupledPointJAFAR(nn.Module):
             nn.Linear(qk_dim, 6) # Output: 3 dims (XYZ) + 3 dims (RGB)
         )
 
+        nn.init.constant_(self.rec_head[-1].weight, 0)
+        nn.init.constant_(self.rec_head[-1].bias, 0)
+
     def _gather_val_efficient(self, tensor, idx):
         b_dim, c_dim, n_dim = tensor.shape
         _, _, k_dim = idx.shape
@@ -96,12 +125,15 @@ class DecoupledPointJAFAR(nn.Module):
         return val
 
     def forward(self, xyz, jafar_feat, sem_feat, knn_idx=None):
+        check_nan(xyz, "JAFAR Input: xyz", stop_on_error=True)
+        check_nan(jafar_feat, "JAFAR Input: jafar_feat", stop_on_error=True)
         b_dim, n_dim, _ = jafar_feat.shape
         jafar_feat_t = jafar_feat.transpose(1, 2).contiguous()
         sem_feat_t = sem_feat.transpose(1, 2).contiguous()
         xyz_t = xyz.transpose(1, 2).contiguous()
         
         geom_emb = self.geom_encoder(jafar_feat_t)
+        check_nan(geom_emb, "JAFAR: geom_emb")
         bdy_logits = self.bdy_head(geom_emb) 
         Q = self.geo_query(geom_emb)
         K = self.geo_key(geom_emb)
@@ -134,7 +166,7 @@ class DecoupledPointJAFAR(nn.Module):
         # [OPTIMIZATION] Lower epsilon to 1e-10.
         # sqrt(1e-10) = 1e-5. This allows distinguishing very close points
         # while keeping self-loop gradients safe.
-        rel_dist = torch.sqrt(sq_sum + 1e-10)
+        rel_dist = torch.sqrt(sq_sum + 1e-6)
         
         # 4. Direction Cosines / Angles
         # [SAFETY] Clamp ensures denominator >= 1e-5. Max gradient ~ 100,000 (Safe for FP32).
@@ -152,15 +184,21 @@ class DecoupledPointJAFAR(nn.Module):
         # ------------------------------------------------------------------
         
         # 6. Feed to MLP
+        check_nan(rel_geo_feat, "JAFAR: rel_geo_feat (After Geometry Calc)", stop_on_error=True)
         pos_enc = self.rel_pos_mlp(rel_geo_feat)
         
         attn_logits = torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5)
+
+        check_nan(attn_logits, "JAFAR: attn_logits (Before Softmax)", stop_on_error=True)
 
         affinity = torch.softmax(attn_logits.float(), dim=-1).type_as(attn_logits)
         
         refined_feat = torch.sum(affinity.unsqueeze(1) * V_g, dim=-1)
         refined_feat = refined_feat + V 
         refined_feat_flat = refined_feat.transpose(1, 2).contiguous().view(-1, self.qk_dim)
+
+        check_nan(refined_feat_flat, "JAFAR: refined_feat_flat", stop_on_error=True)
+
         logits = self.cls_head(refined_feat_flat)
         rec_phys = self.rec_head(refined_feat_flat)
         return logits, affinity, knn_idx, refined_feat_flat, bdy_logits, rec_phys
