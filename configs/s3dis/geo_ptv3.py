@@ -46,10 +46,7 @@ model = dict(
         warmup_epochs=10, 
         ignore_index=ignore_index,
         # S3DIS: Ceiling/Floor/Wall are dominant, Beam/Column are rare.
-        class_weights=[
-            1.00, 1.00, 1.00, 3.37, 3.70, 3.91, 1.44,  # ceiling, floor, wall, beam, column, window, door
-            2.32, 1.74, 10.0, 1.66, 6.53, 1.00        # table, chair, sofa, bookcase, board, clutter
-        ]
+        class_weights=[1.00, 1.00, 1.00, 2.96, 3.49, 3.66, 1.42, 2.49, 1.88, 10.00, 1.68, 6.24, 1.00]
     ),
     backbone_ptv3_cfg=dict(
         type="PointTransformerV3",
