@@ -58,8 +58,8 @@ def evaluate_seed(args):
         h3 = np.abs(coord[:, 2] * h3_k).astype(np.int64)
         
         seed_hash = h1 ^ h2 ^ h3
-        threshold = int(ratio * 100000)
-        label_mask = (seed_hash % 100000) < threshold
+        threshold = int(ratio * 1000000)
+        label_mask = (seed_hash % 1000000) < threshold
         
         valid_labels = segment[label_mask]
         valid_labels = valid_labels[valid_labels != 255]

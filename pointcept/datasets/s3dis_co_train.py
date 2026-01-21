@@ -18,10 +18,10 @@ class S3DISCoTrainDataset(Dataset):
                  voxel_size=0.02,
                  test_mode=False,
                  loop=1,
-                 labeled_ratio=0.001,
-                 hash_seed_1=97734336,
-                 hash_seed_2=60478499,
-                 hash_seed_3=43328003,
+                 labeled_ratio=0.0001,
+                 hash_seed_1=41176814,
+                 hash_seed_2=64129393,
+                 hash_seed_3=48279254,
                  # Stride for sliding window, smaller means higher overlap/accuracy
                  stride=0.5,
                  scan_mode='xyz',
@@ -109,8 +109,8 @@ class S3DISCoTrainDataset(Dataset):
                 h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
                 h3 = np.abs(coord[:, 2] * self.h3_k).astype(np.int64)
                 seed_hash = h1 ^ h2 ^ h3
-                threshold = int(self.labeled_ratio * 100000)
-                label_mask = (seed_hash % 100000) < threshold
+                threshold = int(self.labeled_ratio * 1000000)
+                label_mask = (seed_hash % 1000000) < threshold
                 segment[~label_mask] = 255
 
             indices = self.get_knn_indices(coord, center=None) 
