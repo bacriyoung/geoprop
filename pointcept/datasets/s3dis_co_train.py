@@ -264,31 +264,33 @@ class S3DISCoTrainDataset(Dataset):
         color_t = torch.from_numpy(color).float()
         target_t = torch.from_numpy(segment).long()
 
-        # JAFAR Feature Preparation: Normalized RGB and XYZ
-        jafar_color = color_t / 255.0
+        # [JAFAR Stream] Isotropic Normalization
         xyz_min = coord_t.min(0)[0]
         xyz_max = coord_t.max(0)[0]
-        xyz_norm = (coord_t - xyz_min) / (xyz_max - xyz_min + 1e-6)
-        jafar_feat = torch.cat([jafar_color, xyz_norm], dim=1) 
-
-        # PTv3 Feature Preparation: RGB in [-1, 1]
-        ptv3_feat = color_t / 127.5 - 1.0 
+        scale = (xyz_max - xyz_min).max() + 1e-6
+        iso_coord = (coord_t - xyz_min) / scale
         
-        # Consistent Coordinate Normalization: Min-Shift (Aligns with training)
+        jafar_color = color_t / 255.0
+        jafar_feat = torch.cat([jafar_color, iso_coord], dim=1) 
+
+        # [PTV3 Stream] Official Style: Physical Coordinates + Color
         ptv3_coord = coord_t - coord_t.min(0)[0]
+        ptv3_color = color_t / 255.0
+        ptv3_feat = torch.cat([ptv3_coord, ptv3_color], dim=1)
+        
         grid_coord = (ptv3_coord / self.voxel_size).int()
 
         input_dict = dict(
             coord=ptv3_coord, 
             grid_coord=grid_coord,
-            ptv3_feat=ptv3_feat,    
+            ptv3_feat=ptv3_feat,     
             jafar_coord=coord_t,
             jafar_feat=jafar_feat,
-            index=torch.from_numpy(indices).long(), # Global indices for voting
-            offset=torch.tensor([coord_t.shape[0]], dtype=torch.int32) # Offset for PTv3/Spconv
+            iso_coord=iso_coord,
+            index=torch.from_numpy(indices).long(), 
+            offset=torch.tensor([coord_t.shape[0]], dtype=torch.int32) 
         )
         
-        # Only add segment if not in fragment mode to avoid redundant memory usage in testing
         if not is_test_fragment:
             input_dict['segment'] = target_t
             

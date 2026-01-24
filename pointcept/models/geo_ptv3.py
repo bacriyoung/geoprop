@@ -174,7 +174,7 @@ class GeoPTV3(nn.Module):
         self.extra_feat_dim = max(0, geo_input_dim - 3)
         self.real_geo_dim = 9 + self.extra_feat_dim
         
-        print(f"[GeoPTV3] Lean Mode: JAFAR Input Dim = {self.real_geo_dim}")
+        print(f"[GeoPTV3] JAFAR Input Dim = {self.real_geo_dim}")
         
         self.geo_stream = DecoupledPointJAFAR(
             qk_dim=64, k=16, 
@@ -185,7 +185,7 @@ class GeoPTV3(nn.Module):
         self.register_buffer("prototypes", torch.zeros(num_classes, 64))
         self.register_buffer("proto_count", torch.zeros(num_classes))
         self.momentum = 0.99
-
+        
         if criteria is not None:
             self.criteria = LOSSES.build(criteria)
         else:
@@ -213,84 +213,42 @@ class GeoPTV3(nn.Module):
                     self.proto_count[c] += 1
 
     def forward(self, input_dict):
-        # =========================================================================
-        # 1. Sliding Window Validation (Fixed for 2-GPU DDP Shape Mismatch)
-        # =========================================================================
         if "fragment_list" in input_dict:
-            # Unpack Batch (B=1)
             fragment_list = input_dict["fragment_list"][0]
-            
-            # Force flatten Target to (N,) for internal Loss calculation
             full_segment = input_dict["segment"].view(-1)
-            
-            # [CRITICAL CHANGE] Do NOT overwrite input_dict["segment"] in place.
-            # In DDP, the Evaluator holds a reference to the original batch (1, N),
-            # modifying it here creates a mismatch if we flatten it to (N,).
-            # input_dict["segment"] = full_segment  <-- REMOVED
-            
             num_points_total = full_segment.shape[0]
             num_classes = self.aux_head.out_features
-            
-            # Standard GPU Device
             device = torch.cuda.current_device()
-
-            # Initialize container on GPU
             full_logits = torch.zeros((num_points_total, num_classes), device=device)
             full_counts = torch.zeros((num_points_total, 1), device=device)
-
             for fragment in fragment_list:
-                # Move fragment data to GPU
                 for key in fragment.keys():
                     if isinstance(fragment[key], torch.Tensor):
                         fragment[key] = fragment[key].to(device)
-                
-                # Inference
                 chunk_output = self.forward(fragment)
-                
-                # Probabilities
                 chunk_logits = torch.softmax(chunk_output["seg_logits"], dim=-1)
                 global_idx = fragment["index"].long()
-                
-                # Accumulate
                 full_logits.index_add_(0, global_idx, chunk_logits)
                 full_counts.index_add_(0, global_idx, torch.ones_like(chunk_logits[:, :1]))
-
-            # Normalize
             full_logits /= full_counts.clamp(min=1.0)
-            
-            # Ensure target is on GPU for Loss
             if full_segment.device != device:
                 full_segment = full_segment.to(device)
-
-            val_loss = F.nll_loss(
-                torch.log(full_logits.clamp(min=1e-6)), 
-                full_segment.long(), 
-                ignore_index=255
-            )
-            
-            # [CRITICAL FIX] Reshape logits to match Evaluator's expected input shape
-            # Evaluator has target shape (1, N). It does pred = logits.max(1)[1].
-            # We need logits to be (1, C, N) so that max(1) yields pred of shape (1, N).
-            # Current full_logits is (N, C).
-            # Permute (N, C) -> (C, N) -> Unsqueeze (1, C, N)
+            val_loss = F.nll_loss(torch.log(full_logits.clamp(min=1e-6)), full_segment.long(), ignore_index=255)
             logits_eval = full_logits.permute(1, 0).unsqueeze(0)
-            
-            output_dict = {
-                "seg_logits": logits_eval,  # (1, C, N) matches Evaluator
-                "target": full_segment, 
-                "loss": val_loss
-            }
+            output_dict = {"seg_logits": logits_eval, "target": full_segment, "loss": val_loss}
             return output_dict
 
-        # =========================================================================
-        # 2. Training / Single Chunk Forward (Standard v5.0)
-        # =========================================================================
-        if "jafar_coord" in input_dict:
+        if "iso_coord" in input_dict:
             j_coord = input_dict['jafar_coord']
             j_feat_raw = input_dict['jafar_feat']
+            iso_coord = input_dict['iso_coord']
         else:
             j_coord = input_dict['coord'].clone()
             j_feat_raw = input_dict['feat'].clone()
+            xyz_min = j_coord.min(1)[0] if j_coord.dim() == 3 else j_coord.min(0)[0]
+            xyz_max = j_coord.max(1)[0] if j_coord.dim() == 3 else j_coord.max(0)[0]
+            scale = (xyz_max - xyz_min).max() + 1e-6
+            iso_coord = (j_coord - xyz_min) / scale
             
         if j_coord.dim() == 2:
             total_points = j_coord.shape[0]
@@ -302,21 +260,22 @@ class GeoPTV3(nn.Module):
                 valid_len = batch_size_val * self.num_points
                 j_coord = j_coord[:valid_len].view(batch_size_val, self.num_points, -1)
                 j_feat_raw = j_feat_raw[:valid_len].view(batch_size_val, self.num_points, -1)
+                iso_coord = iso_coord[:valid_len].view(batch_size_val, self.num_points, -1)
             else:
                 if "batch" in input_dict:
                     batch_size_val = input_dict["batch"].max().item() + 1
                 else:
                     batch_size_val = 1
-                
                 if total_points % batch_size_val == 0:
                     points_per_batch = total_points // batch_size_val
                     j_coord = j_coord.view(batch_size_val, points_per_batch, -1)
                     j_feat_raw = j_feat_raw.view(batch_size_val, points_per_batch, -1)
+                    iso_coord = iso_coord.view(batch_size_val, points_per_batch, -1)
                 else:
                     batch_size_val = 1
                     j_coord = j_coord.view(1, total_points, -1)
                     j_feat_raw = j_feat_raw.view(1, total_points, -1)
-
+                    iso_coord = iso_coord.view(1, total_points, -1)
                 if "batch" not in input_dict:
                     input_dict["batch"] = torch.zeros(total_points, device=j_coord.device, dtype=torch.long)
         else:
@@ -326,7 +285,6 @@ class GeoPTV3(nn.Module):
         raw_coord = input_dict["coord"]
         raw_feat = input_dict.get("ptv3_feat", input_dict.get("feat"))
         raw_grid = input_dict.get("grid_coord")
-        
         if raw_coord.dim() == 3: 
             flat_coord = raw_coord.reshape(-1, 3).contiguous()
             flat_feat = raw_feat.reshape(-1, raw_feat.shape[-1]).contiguous()
@@ -343,13 +301,10 @@ class GeoPTV3(nn.Module):
             else:
                 current_N = flat_coord.shape[0] // batch_size_val
                 ptv3_input["batch"] = torch.arange(batch_size_val, device=raw_coord.device).repeat_interleave(current_N)
-
         ptv3_input["coord"] = flat_coord
         ptv3_input["feat"] = flat_feat
-        
         if self.ptv3_in_channels == 6 and flat_feat.shape[1] == 3:
             ptv3_input["feat"] = torch.cat([flat_feat, flat_coord], dim=1)
-        
         if flat_grid is None:
             ptv3_input["grid_coord"] = (flat_coord / 0.02).int()
         else:
@@ -367,7 +322,7 @@ class GeoPTV3(nn.Module):
         batch_start = (torch.arange(batch_size_val, device=j_coord.device) * N_current).view(batch_size_val, 1, 1)
         shared_knn_idx = idx_flat.view(batch_size_val, N_current, 16) - batch_start
         
-        geo_blobs = compute_lean_gblobs(j_coord, k=16, knn_idx=shared_knn_idx, scale=self.geo_scale) 
+        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=10.0)
         
         if self.extra_feat_dim > 0:
             extra_feat = j_feat_raw[:, :, :self.extra_feat_dim]
@@ -378,8 +333,8 @@ class GeoPTV3(nn.Module):
         target_phys = j_feat_raw.contiguous().view(-1, j_feat_raw.shape[-1])
         
         refined_logits, affinity, k_idx, refined_feat, bdy_logits, rec_phys = self.geo_stream(
-            xyz=j_coord,
-            jafar_feat=jafar_input,
+            xyz=iso_coord,
+            jafar_feat=jafar_input, 
             sem_feat=sem_feat_dense,
             knn_idx=shared_knn_idx 
         )
@@ -394,7 +349,6 @@ class GeoPTV3(nn.Module):
             if valid_mask.sum() > 0:
                 self.update_prototypes(refined_feat[valid_mask].detach(), targets[valid_mask])
             else:
-                # Create dummy empty tensors on the same device to keep DDP sync happy
                 dummy_feat = torch.zeros((0, refined_feat.shape[-1]), device=refined_feat.device)
                 dummy_label = torch.zeros((0,), dtype=torch.long, device=targets.device)
                 self.update_prototypes(dummy_feat, dummy_label)
