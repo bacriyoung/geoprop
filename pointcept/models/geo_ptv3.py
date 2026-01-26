@@ -7,9 +7,6 @@ from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
 
-# =========================================================================
-# 0. GBlobs Utilities
-# =========================================================================
 def compute_covariance_features(features, knn_indices, k=16):
     b_dim, n_dim, c_dim = features.shape
     batch_idx = torch.arange(b_dim, device=features.device).view(b_dim, 1, 1).expand(-1, n_dim, k)
@@ -38,9 +35,6 @@ def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=10.0):
     geo_blobs = compute_covariance_features(xyz * scale, knn_idx, k)
     return geo_blobs 
 
-# =========================================================================
-# 1. DecoupledPointJAFAR
-# =========================================================================
 class DecoupledPointJAFAR(nn.Module):
     def __init__(self, qk_dim=64, k=16, input_geo_dim=12, sem_dim=192, num_classes=13): 
         super().__init__()
@@ -72,7 +66,7 @@ class DecoupledPointJAFAR(nn.Module):
         )
         self.bdy_head = nn.Sequential(
             nn.Conv1d(qk_dim, 32, 1), 
-            nn.GroupNorm(4, 32),     
+            nn.GroupNorm(4, 32),      
             nn.ReLU(),
             nn.Conv1d(32, 1, 1)
         )
@@ -83,7 +77,7 @@ class DecoupledPointJAFAR(nn.Module):
             nn.Linear(qk_dim, qk_dim),
             nn.LayerNorm(qk_dim),
             nn.ReLU(),
-            nn.Linear(qk_dim, 6) # Output: 3 dims (XYZ) + 3 dims (RGB)
+            nn.Linear(qk_dim, 6) 
         )
 
     def _gather_val_efficient(self, tensor, idx):
@@ -118,27 +112,19 @@ class DecoupledPointJAFAR(nn.Module):
         xyz_g = self._gather_val_efficient(xyz_t, knn_idx)
         V_g = self._gather_val_efficient(V, knn_idx)
         
-        # [MODIFIED] Full Explicit Geometric Encoding
-        # 1. Relative Coordinates (dx, dy, dz) [B, 3, N, K]
         xyz_t_f32 = xyz_t.float()
         xyz_g_f32 = xyz_g.float()
         rel_diff = xyz_t_f32.unsqueeze(-1) - xyz_g_f32
         
-        # 2. Euclidean Distance (d) [B, 1, N, K]
         sq_sum = torch.sum(rel_diff ** 2, dim=1, keepdim=True)
-        # 1e-6 is fine for forward, but we need clamp for backward stability
         rel_dist = torch.sqrt(sq_sum + 1e-10)
         
-        # 3. Direction Cosines / Angles [B, 3, N, K]
-        # Represents geometric orientation (Azimuth/Altitude info)
         rel_dist_safe = torch.clamp(rel_dist, min=1e-5)
         rel_direction = rel_diff / rel_dist_safe
         
-        # 4. Concatenate all geometric priors -> 7 channels
         rel_geo_feat = torch.cat([rel_diff, rel_dist, rel_direction], dim=1)
         rel_geo_feat = rel_geo_feat.type_as(xyz)
         
-        # 5. Feed to MLP
         pos_enc = self.rel_pos_mlp(rel_geo_feat)
         
         attn_logits = torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5)
@@ -151,9 +137,6 @@ class DecoupledPointJAFAR(nn.Module):
         rec_phys = self.rec_head(refined_feat_flat)
         return logits, affinity, knn_idx, refined_feat_flat, bdy_logits, rec_phys
 
-# =========================================================================
-# 2. GeoPTV3 Main Model
-# =========================================================================
 @MODELS.register_module()
 class GeoPTV3(nn.Module):
     def __init__(self, backbone_ptv3_cfg, geo_input_dim=6, num_classes=13,
@@ -245,10 +228,7 @@ class GeoPTV3(nn.Module):
         else:
             j_coord = input_dict['coord'].clone()
             j_feat_raw = input_dict['feat'].clone()
-            xyz_min = j_coord.min(1)[0] if j_coord.dim() == 3 else j_coord.min(0)[0]
-            xyz_max = j_coord.max(1)[0] if j_coord.dim() == 3 else j_coord.max(0)[0]
-            scale = (xyz_max - xyz_min).max() + 1e-6
-            iso_coord = (j_coord - xyz_min) / scale
+            iso_coord = j_coord - j_coord.min(0)[0]
             
         if j_coord.dim() == 2:
             total_points = j_coord.shape[0]
@@ -322,7 +302,7 @@ class GeoPTV3(nn.Module):
         batch_start = (torch.arange(batch_size_val, device=j_coord.device) * N_current).view(batch_size_val, 1, 1)
         shared_knn_idx = idx_flat.view(batch_size_val, N_current, 16) - batch_start
         
-        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=10.0)
+        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=1.0)
         
         if self.extra_feat_dim > 0:
             extra_feat = j_feat_raw[:, :, :self.extra_feat_dim]

@@ -22,7 +22,6 @@ class S3DISCoTrainDataset(Dataset):
                  hash_seed_1=97734336,
                  hash_seed_2=60478499,
                  hash_seed_3=43328003,
-                 # Stride for sliding window, smaller means higher overlap/accuracy
                  stride=0.5,
                  scan_mode='xyz',
                  tta_conf=None,
@@ -38,7 +37,6 @@ class S3DISCoTrainDataset(Dataset):
         self.stride = stride
         self.scan_mode = scan_mode
 
-        # [NEW] Initialize TTA Config
         self.tta_conf = tta_conf if tta_conf is not None else dict(enable=False)
         if self.test_mode and self.tta_conf.get('enable'):
             if self.logger:
@@ -57,7 +55,6 @@ class S3DISCoTrainDataset(Dataset):
 
         self.raw_room_list = self.get_file_list()
         
-        # Build Data List
         self.data_list = []
         if len(self.raw_room_list) > 0:
             if not self.test_mode:
@@ -99,12 +96,8 @@ class S3DISCoTrainDataset(Dataset):
                 self.logger.error(f"Error loading {room_dir}: {e}")
             return self.__getitem__(np.random.randint(0, len(self)))
 
-        # ==================================================================
-        # Training Mode: Random KNN Crop (Keep original logic)
-        # ==================================================================
         if not self.test_mode:
             if self.split == 'train':
-                # Semiautomatic labeling logic
                 h1 = np.abs(coord[:, 0] * self.h1_k).astype(np.int64)
                 h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
                 h3 = np.abs(coord[:, 2] * self.h3_k).astype(np.int64)
@@ -116,7 +109,6 @@ class S3DISCoTrainDataset(Dataset):
             indices = self.get_knn_indices(coord, center=None) 
             coord_c, color_c, segment_c = coord[indices], color[indices], segment[indices]
             
-            # Simple augmentation for train split
             if self.split == 'train':
                 angle = np.random.uniform(0, 2 * np.pi)
                 cosval, sinval = np.cos(angle), np.sin(angle)
@@ -128,63 +120,45 @@ class S3DISCoTrainDataset(Dataset):
                 if np.random.random() > 0.5: coord_c[:, 1] = -coord_c[:, 1]
                 
                 if np.random.random() < 0.5:
-                    # Add random noise (jitter) and scale (contrast)
                     noise = np.random.randn(1).astype(np.float32)
                     color_c = color_c * (1 + 0.1 * noise) + 0.1 * np.random.randn(1).astype(np.float32)
             
-                # Color Drop
-                # Randomly drop color (set to 0) to force the model to look at XYZ geometry.
                 if np.random.random() < 0.2:
                     color_c[:] = 0.0
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
-        # ==================================================================
-        # Test/Val Mode: Dense Sliding KNN Window (Dual Mode: XY / XYZ)
-        # ==================================================================
         else:
             fragment_list = []
             coord_min = np.min(coord, axis=0)
             coord_max = np.max(coord, axis=0)
 
-            # Initialize a mask to track which points have been visited
             visited_mask = np.zeros(coord.shape[0], dtype=bool)
             
-            # [Modified] Unified Scanning Logic for 'xy' and 'xyz' modes
             stride_x, stride_y = self.stride, self.stride
             
-            # Generate grids for X and Y axes
             grid_x = np.arange(coord_min[0], coord_max[0] + stride_x, stride_x)
             grid_y = np.arange(coord_min[1], coord_max[1] + stride_y, stride_y)
             
-            # [Modified] Branching logic for Z-axis generation based on scan_mode
             if self.scan_mode == 'xyz':
-                # 'xyz' mode: Full 3D scanning, moves along Z axis as well
                 stride_z = self.stride
                 grid_z = np.arange(coord_min[2], coord_max[2] + stride_z, stride_z)
             else:
-                # 'xy' mode (Default): Fix Z at the room center, scan only XY plane
-                # This is faster but might miss points near ceiling/floor if num_points is small
                 z_center = (coord_min[2] + coord_max[2]) / 2.0
-                grid_z = [z_center] # Wrap in list to make the loop generic
+                grid_z = [z_center] 
             
-            # [NEW] Generate TTA Transform List based on Config
-            # Always include Identity (Original View)
             transforms_to_apply = [dict(scale=1.0, flip_x=False, flip_y=False, rot_z=0)]
             
             if self.tta_conf.get('enable'):
-                # 1. Scale TTA
                 for s in self.tta_conf.get('scale_list', []):
                     transforms_to_apply.append(dict(scale=s, flip_x=False, flip_y=False, rot_z=0))
                 
-                # 2. Flip TTA
                 if self.tta_conf.get('flip_x'):
                     transforms_to_apply.append(dict(scale=1.0, flip_x=True, flip_y=False, rot_z=0))
                 if self.tta_conf.get('flip_y'):
                     transforms_to_apply.append(dict(scale=1.0, flip_x=False, flip_y=True, rot_z=0))
                 
-                # 3. Rotation TTA (90, 180, 270)
                 if self.tta_conf.get('rot_z'):
-                    for k in [1, 2, 3]: # 90*k degrees
+                    for k in [1, 2, 3]:
                         transforms_to_apply.append(dict(scale=1.0, flip_x=False, flip_y=False, rot_z=k))
 
             for x in grid_x:
@@ -192,25 +166,17 @@ class S3DISCoTrainDataset(Dataset):
                     for z in grid_z:
                         center = np.array([x, y, z])
                         
-                        # Core: Get fixed-size KNN indices to match training distribution
                         indices = self.get_knn_indices(coord, center=center)
 
-                        # Update coverage mask
                         visited_mask[indices] = True
                         
                         coord_chunk = coord[indices]
                         color_chunk = color[indices]
                         segment_chunk = segment[indices]
 
-                        # [NEW] Apply TTA Transforms Loop
-                        # Instead of one chunk, we generate multiple chunks (views) for the SAME indices.
-                        # The model's index_add_ logic will effectively sum their logits (Voting).
-                        # [NEW] Apply TTA Transforms Loop
                         for t_cfg in transforms_to_apply:
                             coord_aug = coord_chunk.copy()
                             
-                            
-                            # A. Rotate
                             rot_k = t_cfg.get('rot_z', 0) 
                             if rot_k > 0:
                                 angle = rot_k * np.pi / 2
@@ -218,33 +184,27 @@ class S3DISCoTrainDataset(Dataset):
                                 R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
                                 coord_aug = coord_aug @ R.T
                             
-                            # B. Scale
                             scale_val = t_cfg.get('scale', 1.0) 
                             if scale_val != 1.0:
                                 coord_aug *= scale_val
                                 
-                            # C. Flip
                             if t_cfg.get('flip_x', False): 
                                 coord_aug[:, 0] = -coord_aug[:, 0]
                             if t_cfg.get('flip_y', False): 
                                 coord_aug[:, 1] = -coord_aug[:, 1]
                         
-                            # Normalize and wrap into dict
-                            # is_test_fragment=True prevents adding 'segment' to individual chunks to save GPU memory
                             chunk_dict = self.prepare_input_dict(
-                                coord_aug,      # Transformed coordinates
+                                coord_aug,      
                                 color_chunk, 
                                 segment_chunk, 
-                                indices,        # Shared Global Indices (Key for Voting)
+                                indices,        
                                 is_test_fragment=True
                             )
                             fragment_list.append(chunk_dict)
 
-            # [New] Check for uncovered points after scanning the whole scene
             uncovered_count = np.sum(~visited_mask)
             if uncovered_count > 0:
                 if self.logger is not None:
-                    # Use different log levels: Warning for XYZ (should be full coverage), Info for XY
                     log_func = self.logger.warning if self.scan_mode == 'xyz' else self.logger.info
                     log_func(
                         f"[{self.scan_mode.upper()} Scan] {uncovered_count} points "
@@ -252,11 +212,10 @@ class S3DISCoTrainDataset(Dataset):
                         f"Consider decreasing 'stride' or switching scan mode."
                     )
 
-            # Returns scene-level dict, compatible with SemSegTester.test() logic
             return dict(
                 name=os.path.basename(room_dir),
                 fragment_list=fragment_list, 
-                segment=segment # Whole scene ground truth for evaluation
+                segment=segment 
             )
 
     def prepare_input_dict(self, coord, color, segment, indices, is_test_fragment=False):
@@ -264,21 +223,16 @@ class S3DISCoTrainDataset(Dataset):
         color_t = torch.from_numpy(color).float()
         target_t = torch.from_numpy(segment).long()
 
-        # [JAFAR Stream] Isotropic Normalization
-        xyz_min = coord_t.min(0)[0]
-        xyz_max = coord_t.max(0)[0]
-        scale = (xyz_max - xyz_min).max() + 1e-6
-        iso_coord = (coord_t - xyz_min) / scale
-        
-        jafar_color = color_t / 255.0
-        jafar_feat = torch.cat([jafar_color, iso_coord], dim=1) 
-
-        # [PTV3 Stream] Official Style: Physical Coordinates + Color
         ptv3_coord = coord_t - coord_t.min(0)[0]
         ptv3_color = color_t / 255.0
         ptv3_feat = torch.cat([ptv3_coord, ptv3_color], dim=1)
         
         grid_coord = (ptv3_coord / self.voxel_size).int()
+
+        iso_coord = ptv3_coord.clone()
+        
+        jafar_color = color_t / 255.0
+        jafar_feat = torch.cat([jafar_color, iso_coord], dim=1) 
 
         input_dict = dict(
             coord=ptv3_coord, 
@@ -286,7 +240,7 @@ class S3DISCoTrainDataset(Dataset):
             ptv3_feat=ptv3_feat,     
             jafar_coord=coord_t,
             jafar_feat=jafar_feat,
-            iso_coord=iso_coord,
+            iso_coord=iso_coord, 
             index=torch.from_numpy(indices).long(), 
             offset=torch.tensor([coord_t.shape[0]], dtype=torch.int32) 
         )
@@ -301,25 +255,19 @@ class S3DISCoTrainDataset(Dataset):
         target_N = self.num_points
         
         if center is None:
-            # Random center for training
             center_idx = np.random.choice(N)
             center_point = coord[center_idx]
         else:
-            # Specified center for sliding window
             center_point = center
 
-        # Calculate squared Euclidean distance to center
         dist = np.sum((coord - center_point)**2, axis=1)
         
-        # Ensure we always return exactly target_N points
         if N < target_N:
             base = np.arange(N)
             pad = np.random.choice(N, target_N - N, replace=True)
             indices = np.concatenate([base, pad])
         else:
-            # Partition is much faster than full sort for getting top-K
             indices = np.argpartition(dist, target_N)[:target_N]
             
-        # Shuffle to break spatial ordering, important for robust learning/inference
         np.random.shuffle(indices)
         return indices
