@@ -30,7 +30,7 @@ mix_prob = 0.0
 
 # Dataset Parameters
 num_classes = 20
-ignore_index = -1 
+ignore_index = 255 
 
 # -------------------------------------------------------------------------
 # Model Settings (GeoPTV3)
@@ -160,7 +160,7 @@ data = dict(
         num_points=102400, 
         voxel_size=0.02,
         test_mode=True,   
-        stride=1.5,
+        stride=4.0,
         transform=None,
         loop=1,
         ignore_index=ignore_index,

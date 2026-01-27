@@ -23,9 +23,9 @@ class ScanNetGeoDataset(Dataset):
                  hash_seed_2=38957831,
                  hash_seed_3=26839085,
                  stride=0.5,
-                 scan_mode='xyz',
+                 scan_mode='xy',
                  tta_conf=None,
-                 ignore_index=-1,    # ScanNet usually uses -1 for ignored classes
+                 ignore_index=255,    # ScanNet usually uses -1 for ignored classes
                  **kwargs): 
         self.data_root = data_root
         self.split = split
@@ -117,6 +117,7 @@ class ScanNetGeoDataset(Dataset):
             else:
                 # If no labels exist (e.g., test set), fill with ignore_index
                 segment = np.ones(coord.shape[0], dtype=np.int64) * self.ignore_index
+            segment[segment == -1] = self.ignore_index
 
         except Exception as e:
             if self.logger is not None:
