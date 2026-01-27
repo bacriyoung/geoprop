@@ -52,7 +52,7 @@ model = dict(
         lambda_bdy=0.1,
         warmup_epochs=10, 
         ignore_index=ignore_index,
-        class_weights=None 
+        class_weights=[1.00, 1.00, 1.17, 1.75, 1.00, 1.94, 1.35, 1.04, 1.18, 1.96, 9.16, 9.28, 2.49, 2.18, 9.38, 10.00, 10.00, 10.00, 10.00, 1.38] 
     ),
     backbone_ptv3_cfg=dict(
         type="PointTransformerV3",

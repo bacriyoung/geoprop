@@ -19,9 +19,9 @@ class ScanNetGeoDataset(Dataset):
                  test_mode=False,
                  loop=1,
                  labeled_ratio=1.0,  # Default 1.0 for fully supervised ScanNet
-                 hash_seed_1=97734336,
-                 hash_seed_2=60478499,
-                 hash_seed_3=43328003,
+                 hash_seed_1=27798836,
+                 hash_seed_2=38957831,
+                 hash_seed_3=26839085,
                  stride=0.5,
                  scan_mode='xyz',
                  tta_conf=None,
@@ -50,7 +50,7 @@ class ScanNetGeoDataset(Dataset):
 
         if self.split == 'train' and loop == 1:
             if self.logger is not None:
-                self.logger.warning("⚠️ [Dataset] 'loop' arg appears to be 1 for training. Forcing override to 30.")
+                self.logger.warning("⚠️ [Dataset] 'loop' arg appears to be 1 for training. Forcing override to 8.")
             self.loop = 8
         else:
             self.loop = loop
@@ -144,10 +144,26 @@ class ScanNetGeoDataset(Dataset):
             coord_c, color_c, segment_c = coord[indices], color[indices], segment[indices]
             
             # 3. Hardcoded Augmentation (Rotation, Scaling, Flipping, Color Jitter)
-            angle = np.random.uniform(0, 2 * np.pi)
-            cosval, sinval = np.cos(angle), np.sin(angle)
-            R = np.array([[cosval, -sinval, 0], [sinval, cosval, 0], [0, 0, 1]], dtype=np.float32)
-            coord_c = np.dot(coord_c, R.T)
+            # Z-Axis Rotation: [-1, 1] * pi (i.e., -180 to 180 degrees) with p=0.5
+            if np.random.random() < 0.5:
+                angle_z = np.random.uniform(-1, 1) * np.pi
+                cos_z, sin_z = np.cos(angle_z), np.sin(angle_z)
+                R_z = np.array([[cos_z, -sin_z, 0], [sin_z, cos_z, 0], [0, 0, 1]], dtype=np.float32)
+                coord_c = np.dot(coord_c, R_z.T)
+
+            # X-Axis Tilt: [-1/64, 1/64] * pi (approx +/- 2.8 degrees) with p=0.5
+            if np.random.random() < 0.5:
+                angle_x = np.random.uniform(-1/64, 1/64) * np.pi
+                cos_x, sin_x = np.cos(angle_x), np.sin(angle_x)
+                R_x = np.array([[1, 0, 0], [0, cos_x, -sin_x], [0, sin_x, cos_x]], dtype=np.float32)
+                coord_c = np.dot(coord_c, R_x.T)
+
+            # Y-Axis Tilt: [-1/64, 1/64] * pi with p=0.5
+            if np.random.random() < 0.5:
+                angle_y = np.random.uniform(-1/64, 1/64) * np.pi
+                cos_y, sin_y = np.cos(angle_y), np.sin(angle_y)
+                R_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]], dtype=np.float32)
+                coord_c = np.dot(coord_c, R_y.T)
             
             scale = np.random.uniform(0.9, 1.1)
             coord_c *= scale

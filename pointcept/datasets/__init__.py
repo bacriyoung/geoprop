@@ -25,3 +25,4 @@ from .dataloader import MultiDatasetDataloader
 
 # 🟢 你的核心 Dataset
 from .s3dis_co_train import S3DISCoTrainDataset
+from .scannet_geo import ScanNetGeoDataset
