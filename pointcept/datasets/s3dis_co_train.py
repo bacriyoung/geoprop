@@ -7,9 +7,10 @@ from torch.utils.data import Dataset
 from pointcept.utils.logger import get_root_logger
 from .builder import DATASETS
 from .transform import Compose, TRANSFORMS
+from .geo_utils import GeoDatasetMixin  # Import mixin
 
 @DATASETS.register_module()
-class S3DISCoTrainDataset(Dataset):
+class S3DISCoTrainDataset(Dataset, GeoDatasetMixin):
     def __init__(self,
                  split='train',
                  data_root='data/s3dis',
@@ -25,7 +26,11 @@ class S3DISCoTrainDataset(Dataset):
                  stride=0.5,
                  scan_mode='xyz',
                  tta_conf=None,
+                 # Config interface for augmentation parameters
+                 rot_z_range=[-1, 1],
+                 tilt_range=[-1/64, 1/64],
                  **kwargs): 
+        
         self.data_root = data_root
         self.split = split
         self.transform = Compose(transform)
@@ -36,6 +41,10 @@ class S3DISCoTrainDataset(Dataset):
         self.labeled_ratio = labeled_ratio
         self.stride = stride
         self.scan_mode = scan_mode
+        
+        # Save augmentation config
+        self.rot_z_range = rot_z_range
+        self.tilt_range = tilt_range
 
         self.tta_conf = tta_conf if tta_conf is not None else dict(enable=False)
         if self.test_mode and self.tta_conf.get('enable'):
@@ -97,6 +106,7 @@ class S3DISCoTrainDataset(Dataset):
             return self.__getitem__(np.random.randint(0, len(self)))
 
         if not self.test_mode:
+            # Hash Masking Logic
             if self.split == 'train':
                 h1 = np.abs(coord[:, 0] * self.h1_k).astype(np.int64)
                 h2 = np.abs(coord[:, 1] * self.h2_k).astype(np.int64)
@@ -106,110 +116,35 @@ class S3DISCoTrainDataset(Dataset):
                 label_mask = (seed_hash % 100000) < threshold
                 segment[~label_mask] = 255
 
-            indices = self.get_knn_indices(coord, center=None) 
+            # KNN Selection
+            indices = self.get_knn_indices(coord, center=None, num_points=self.num_points) 
             coord_c, color_c, segment_c = coord[indices], color[indices], segment[indices]
             
+            # Apply Training Augmentation (from Mixin)
             if self.split == 'train':
-                angle = np.random.uniform(0, 2 * np.pi)
-                cosval, sinval = np.cos(angle), np.sin(angle)
-                R = np.array([[cosval, -sinval, 0], [sinval, cosval, 0], [0, 0, 1]], dtype=np.float32)
-                coord_c = np.dot(coord_c, R.T)
-                scale = np.random.uniform(0.9, 1.1)
-                coord_c *= scale
-                if np.random.random() > 0.5: coord_c[:, 0] = -coord_c[:, 0]
-                if np.random.random() > 0.5: coord_c[:, 1] = -coord_c[:, 1]
-                
-                if np.random.random() < 0.5:
-                    noise = np.random.randn(1).astype(np.float32)
-                    color_c = color_c * (1 + 0.1 * noise) + 0.1 * np.random.randn(1).astype(np.float32)
-            
-                if np.random.random() < 0.2:
-                    color_c[:] = 0.0
+                coord_c, color_c = self.apply_training_augmentation(
+                    coord_c, color_c, 
+                    rot_z_range=self.rot_z_range, 
+                    tilt_range=self.tilt_range
+                )
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)
         else:
-            fragment_list = []
-            coord_min = np.min(coord, axis=0)
-            coord_max = np.max(coord, axis=0)
+            # Apply Sliding Window & TTA (from Mixin)
+            fragment_list, uncovered_count = self.get_sliding_window_fragments(
+                coord, color, segment, 
+                num_points=self.num_points, 
+                stride=self.stride, 
+                scan_mode=self.scan_mode, 
+                tta_conf=self.tta_conf
+            )
 
-            visited_mask = np.zeros(coord.shape[0], dtype=bool)
-            
-            stride_x, stride_y = self.stride, self.stride
-            
-            grid_x = np.arange(coord_min[0], coord_max[0] + stride_x, stride_x)
-            grid_y = np.arange(coord_min[1], coord_max[1] + stride_y, stride_y)
-            
-            if self.scan_mode == 'xyz':
-                stride_z = self.stride
-                grid_z = np.arange(coord_min[2], coord_max[2] + stride_z, stride_z)
-            else:
-                z_center = (coord_min[2] + coord_max[2]) / 2.0
-                grid_z = [z_center] 
-            
-            transforms_to_apply = [dict(scale=1.0, flip_x=False, flip_y=False, rot_z=0)]
-            
-            if self.tta_conf.get('enable'):
-                for s in self.tta_conf.get('scale_list', []):
-                    transforms_to_apply.append(dict(scale=s, flip_x=False, flip_y=False, rot_z=0))
-                
-                if self.tta_conf.get('flip_x'):
-                    transforms_to_apply.append(dict(scale=1.0, flip_x=True, flip_y=False, rot_z=0))
-                if self.tta_conf.get('flip_y'):
-                    transforms_to_apply.append(dict(scale=1.0, flip_x=False, flip_y=True, rot_z=0))
-                
-                if self.tta_conf.get('rot_z'):
-                    for k in [1, 2, 3]:
-                        transforms_to_apply.append(dict(scale=1.0, flip_x=False, flip_y=False, rot_z=k))
-
-            for x in grid_x:
-                for y in grid_y:
-                    for z in grid_z:
-                        center = np.array([x, y, z])
-                        
-                        indices = self.get_knn_indices(coord, center=center)
-
-                        visited_mask[indices] = True
-                        
-                        coord_chunk = coord[indices]
-                        color_chunk = color[indices]
-                        segment_chunk = segment[indices]
-
-                        for t_cfg in transforms_to_apply:
-                            coord_aug = coord_chunk.copy()
-                            
-                            rot_k = t_cfg.get('rot_z', 0) 
-                            if rot_k > 0:
-                                angle = rot_k * np.pi / 2
-                                c, s = np.cos(angle), np.sin(angle)
-                                R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-                                coord_aug = coord_aug @ R.T
-                            
-                            scale_val = t_cfg.get('scale', 1.0) 
-                            if scale_val != 1.0:
-                                coord_aug *= scale_val
-                                
-                            if t_cfg.get('flip_x', False): 
-                                coord_aug[:, 0] = -coord_aug[:, 0]
-                            if t_cfg.get('flip_y', False): 
-                                coord_aug[:, 1] = -coord_aug[:, 1]
-                        
-                            chunk_dict = self.prepare_input_dict(
-                                coord_aug,      
-                                color_chunk, 
-                                segment_chunk, 
-                                indices,        
-                                is_test_fragment=True
-                            )
-                            fragment_list.append(chunk_dict)
-
-            uncovered_count = np.sum(~visited_mask)
             if uncovered_count > 0:
                 if self.logger is not None:
                     log_func = self.logger.warning if self.scan_mode == 'xyz' else self.logger.info
                     log_func(
                         f"[{self.scan_mode.upper()} Scan] {uncovered_count} points "
-                        f"({uncovered_count/len(coord):.2%}) were NOT covered by sliding windows in {os.path.basename(room_dir)}! "
-                        f"Consider decreasing 'stride' or switching scan mode."
+                        f"({uncovered_count/len(coord):.2%}) were NOT covered by sliding windows in {os.path.basename(room_dir)}!"
                     )
 
             return dict(
@@ -249,25 +184,3 @@ class S3DISCoTrainDataset(Dataset):
             input_dict['segment'] = target_t
             
         return input_dict
-
-    def get_knn_indices(self, coord, center=None):
-        N = coord.shape[0]
-        target_N = self.num_points
-        
-        if center is None:
-            center_idx = np.random.choice(N)
-            center_point = coord[center_idx]
-        else:
-            center_point = center
-
-        dist = np.sum((coord - center_point)**2, axis=1)
-        
-        if N < target_N:
-            base = np.arange(N)
-            pad = np.random.choice(N, target_N - N, replace=True)
-            indices = np.concatenate([base, pad])
-        else:
-            indices = np.argpartition(dist, target_N)[:target_N]
-            
-        np.random.shuffle(indices)
-        return indices
