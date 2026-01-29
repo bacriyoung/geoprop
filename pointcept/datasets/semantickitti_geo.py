@@ -29,6 +29,10 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
                  # Augmentation params (Override defaults for Outdoor)
                  rot_z_range=[-1, 1], 
                  tilt_range=[0, 0], # [ADJUSTMENT] Disable Tilt for SemanticKITTI as per PTv2 config
+                 scale_range=[0.9, 1.1],
+                 jitter_sigma=0.005,
+                 jitter_clip=0.02,
+                 color_drop_prob=0.2,
                  clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2], # [NEW] PointClip range (min_x, min_y, min_z, max_x, ...)
                  **kwargs):
         
@@ -47,6 +51,10 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
         # Augmentation & Preprocessing Config
         self.rot_z_range = rot_z_range
         self.tilt_range = tilt_range # effectively disabled
+        self.scale_range = scale_range
+        self.jitter_sigma = jitter_sigma
+        self.jitter_clip = jitter_clip
+        self.color_drop_prob = color_drop_prob
         self.clip_range = np.array(clip_range)
 
         self.tta_conf = tta_conf if tta_conf is not None else dict(enable=False)
@@ -216,6 +224,10 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
                 coord_c, color_c, 
                 rot_z_range=self.rot_z_range, 
                 tilt_range=self.tilt_range
+                scale_range=self.scale_range,
+                jitter_sigma=self.jitter_sigma,
+                jitter_clip=self.jitter_clip,
+                color_drop_prob=self.color_drop_prob
             )
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)

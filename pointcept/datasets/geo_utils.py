@@ -45,7 +45,7 @@ class GeoDatasetMixin:
             coord = np.dot(coord, R_y.T)
         
         # 4. Random Scale: [0.9, 1.1]
-        scale = np.random.uniform(0.9, 1.1)
+        scale = np.random.uniform(scale_range[0], scale_range[1])
         coord *= scale
         
         # 5. Random Flip (X-axis)
@@ -54,8 +54,6 @@ class GeoDatasetMixin:
         
         # 6. Random Jitter (Gaussian Noise) - Critical for Regularization
         # Aligned with PTv3 official config: sigma=0.005, clip=0.02
-        jitter_sigma = 0.005
-        jitter_clip = 0.02
         noise = np.clip(jitter_sigma * np.random.randn(coord.shape[0], 3), -jitter_clip, jitter_clip)
         coord += noise
 
@@ -77,12 +75,18 @@ class GeoDatasetMixin:
             color = color * (1 + 0.05 * noise)
 
         # 8. Color Drop (GeoProp specific strategy for weak supervision)
-        if np.random.random() < 0.2:
+        if np.random.random() < color_drop_prob:
             color[:] = 0.0
 
         return coord, color
 
-    def get_sliding_window_fragments(self, coord, color, segment, num_points, stride, scan_mode, tta_conf):
+    def apply_training_augmentation(self, coord, color, 
+                                    rot_z_range=[-1, 1], 
+                                    tilt_range=[-1/64, 1/64],
+                                    scale_range=[0.9, 1.1], 
+                                    jitter_sigma=0.005, 
+                                    jitter_clip=0.02,
+                                    color_drop_prob=0.2):
         """
         Generates sliding window crops for validation/testing.
         Supports combinatorial TTA (aligned with official PTv3).

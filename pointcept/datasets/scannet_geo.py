@@ -19,7 +19,7 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
                  voxel_size=0.02,
                  test_mode=False,
                  loop=1,
-                 labeled_ratio=1.0,
+                 labeled_ratio=0.001,
                  hash_seed_1=27798836,
                  hash_seed_2=38957831,
                  hash_seed_3=26839085,
@@ -30,6 +30,10 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
                  # Config interface for augmentation parameters
                  rot_z_range=[-1, 1],
                  tilt_range=[-1/64, 1/64],
+                 scale_range=[0.9, 1.1],
+                 jitter_sigma=0.005,
+                 jitter_clip=0.02,
+                 color_drop_prob=0.2,
                  **kwargs): 
         
         self.data_root = data_root
@@ -47,6 +51,10 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
         # Save augmentation config
         self.rot_z_range = rot_z_range
         self.tilt_range = tilt_range
+        self.scale_range = scale_range
+        self.jitter_sigma = jitter_sigma
+        self.jitter_clip = jitter_clip
+        self.color_drop_prob = color_drop_prob
 
         self.tta_conf = tta_conf if tta_conf is not None else dict(enable=False)
         if self.test_mode and self.tta_conf.get('enable'):
@@ -141,6 +149,10 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
                 coord_c, color_c, 
                 rot_z_range=self.rot_z_range, 
                 tilt_range=self.tilt_range
+                scale_range=self.scale_range,
+                jitter_sigma=self.jitter_sigma,
+                jitter_clip=self.jitter_clip,
+                color_drop_prob=self.color_drop_prob
             )
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)

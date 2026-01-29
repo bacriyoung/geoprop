@@ -152,9 +152,11 @@ data = dict(
         labeled_ratio=0.001, # Weak supervision
         ignore_index=ignore_index, 
         test_mode=False,
-        # [Specific] Disable Tilt for Outdoor
-        tilt_range=[0, 0],
-        # [Specific] Clip Range
+        rot_z_range=[0,0],
+        tilt_range=[-1/64, 1/64],
+        scale_range=[0.9, 1.1],
+        jitter_sigma=0.005,
+        color_drop_prob=0.2,
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
     ),
 
@@ -169,7 +171,6 @@ data = dict(
         transform=None,
         loop=1,
         ignore_index=ignore_index,
-        tilt_range=[0, 0],
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
         tta_conf=dict(enable=False)
     ),
@@ -184,9 +185,7 @@ data = dict(
         stride=1.0,       
         transform=None,
         ignore_index=ignore_index,
-        tilt_range=[0, 0],
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
-        # Enable Combinatorial TTA (Rot+Scale+Flip)
         tta_conf=dict(enable=True) 
     ),
 )

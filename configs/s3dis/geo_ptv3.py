@@ -137,6 +137,12 @@ data = dict(
         loop=30,
         labeled_ratio=0.001,
         test_mode=False,
+        ignore_index=ignore_index,
+        rot_z_range=[-1, 1],
+        tilt_range=[-1/64, 1/64],
+        scale_range=[0.9, 1.1],
+        jitter_sigma=0.005,
+        color_drop_prob=0.2,
     ),
 
     # -------------------------------------------------------------
@@ -152,13 +158,8 @@ data = dict(
         stride=4.0,       
         transform=None,
         loop=1,  
-        tta_conf=dict(
-            enable=False,            
-            scale_list=[0.9, 0.95, 1.05, 1.1], 
-            flip_x=True,            
-            flip_y=True,           
-            rot_z=True              
-        )
+        ignore_index=ignore_index,
+        tta_conf=dict(enable=False)
     ),
 
     # -------------------------------------------------------------
@@ -173,13 +174,8 @@ data = dict(
         test_mode=True, 
         stride=2.0,       
         transform=None,   
-        tta_conf=dict(
-            enable=True, 
-            scale_list=[0.9, 0.95, 1.05, 1.1],
-            flip_x=True, 
-            flip_y=True, 
-            rot_z=True
-        )
+        ignore_index=ignore_index,
+        tta_conf=dict(enable=True)
     ),
 )
 

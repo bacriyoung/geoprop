@@ -141,13 +141,14 @@ data = dict(
         voxel_size=0.02,
         transform=None,   
         loop=1, 
-        
-        # [Correction] Restored to 0.1% labels for weak supervision (from your S3DIS config)
         labeled_ratio=0.001, 
-        # [Critical] Ensure ignore_index is passed to Dataset to mask unlabeled points
-        ignore_index=ignore_index, 
-        
         test_mode=False,
+        ignore_index=ignore_index,
+        rot_z_range=[-1, 1],
+        tilt_range=[-1/64, 1/64],
+        scale_range=[0.9, 1.1],
+        jitter_sigma=0.005,
+        color_drop_prob=0.2,
     ),
 
     # -------------------------------------------------------------
@@ -164,13 +165,7 @@ data = dict(
         transform=None,
         loop=1,
         ignore_index=ignore_index,
-        tta_conf=dict(
-            enable=False,            
-            scale_list=[0.9, 0.95, 1.05, 1.1], 
-            flip_x=True,            
-            flip_y=True,           
-            rot_z=True              
-        )
+        tta_conf=dict(enable=False)
     ),
 
     # -------------------------------------------------------------
@@ -186,13 +181,7 @@ data = dict(
         stride=1.5,       
         transform=None,
         ignore_index=ignore_index,
-        tta_conf=dict(
-            enable=True, 
-            scale_list=[0.9, 0.95, 1.05, 1.1],
-            flip_x=True, 
-            flip_y=True, 
-            rot_z=True
-        )
+        tta_conf=dict(enable=True)
     ),
 )
 
