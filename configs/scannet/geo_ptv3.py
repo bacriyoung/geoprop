@@ -149,6 +149,10 @@ data = dict(
         scale_range=[0.9, 1.1],
         jitter_sigma=0.005,
         color_drop_prob=0.2,
+        chromatic_autocontrast_p=0.2,
+        chromatic_translation_p=0.95,
+        chromatic_translation_ratio=0.05,
+        chromatic_jitter_std=0.05,
     ),
 
     # -------------------------------------------------------------

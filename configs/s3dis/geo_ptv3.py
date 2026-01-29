@@ -143,6 +143,10 @@ data = dict(
         scale_range=[0.9, 1.1],
         jitter_sigma=0.005,
         color_drop_prob=0.2,
+        chromatic_autocontrast_p=0.2,       # 自动对比度概率
+        chromatic_translation_p=0.95,       # 色彩平移概率
+        chromatic_translation_ratio=0.05,   # 平移幅度
+        chromatic_jitter_std=0.05,          # 色彩噪点强度
     ),
 
     # -------------------------------------------------------------

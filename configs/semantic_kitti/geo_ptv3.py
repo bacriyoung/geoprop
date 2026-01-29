@@ -113,7 +113,7 @@ optimizer = dict(
 scheduler = dict(
     type="OneCycleLR",
     max_lr=[lr, lr * 0.1], 
-    pct_start=0.04,
+    pct_start=0.05,
     anneal_strategy="cos",
     div_factor=10.0,
     final_div_factor=100.0,
@@ -158,6 +158,10 @@ data = dict(
         jitter_sigma=0.005,
         color_drop_prob=0.2,
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
+        chromatic_autocontrast_p=0.2,
+        chromatic_translation_p=0.95,
+        chromatic_translation_ratio=0.05,
+        chromatic_jitter_std=0.05,
     ),
 
     val=dict(

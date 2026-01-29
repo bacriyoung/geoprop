@@ -16,7 +16,11 @@ class GeoDatasetMixin:
                                     scale_range=[0.9, 1.1], 
                                     jitter_sigma=0.005, 
                                     jitter_clip=0.02,
-                                    color_drop_prob=0.2):
+                                    color_drop_prob=0.2,
+                                    chromatic_autocontrast_p=0.2,
+                                    chromatic_translation_p=0.95,
+                                    chromatic_translation_ratio=0.05,
+                                    chromatic_jitter_std=0.05):
         """
         Apply training augmentations aligned with official Pointcept PTv3 config.
         Includes:
@@ -64,21 +68,21 @@ class GeoDatasetMixin:
         coord += noise
 
         # 7. Chromatic Augmentation
-        # 7.1 AutoContrast (Simple simulation)
-        if np.random.random() < 0.2:
+        # 7.1 AutoContrast
+        if np.random.random() < chromatic_autocontrast_p:
             c_min, c_max = np.min(color, axis=0), np.max(color, axis=0)
             scale = 255.0 / (c_max - c_min + 1e-6)
             color = (color - c_min) * scale
 
-        # 7.2 Chromatic Translation & Jitter (p=0.95 in official, we use conservative settings)
-        if np.random.random() < 0.95: 
-            # Translation
-            tr_ratio = 0.05
+        # 7.2 Translation & Jitter
+        if np.random.random() < chromatic_translation_p: 
+            tr_ratio = chromatic_translation_ratio
             tr = np.random.uniform(-tr_ratio, tr_ratio, 3) * 255
             color += tr
-            # Jitter
+            
+            # Jitter (Multiplicative noise)
             noise = np.random.randn(1).astype(np.float32)
-            color = color * (1 + 0.05 * noise)
+            color = color * (1 + chromatic_jitter_std * noise)
 
         # 8. Color Drop (GeoProp specific strategy for weak supervision)
         if np.random.random() < color_drop_prob:

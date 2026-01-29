@@ -34,7 +34,11 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
                  jitter_sigma=0.005,
                  jitter_clip=0.02,
                  color_drop_prob=0.2,
-                 **kwargs): 
+                 chromatic_autocontrast_p=0.2,
+                 chromatic_translation_p=0.95,
+                 chromatic_translation_ratio=0.05,
+                 chromatic_jitter_std=0.05,
+                 **kwargs):
         
         self.data_root = data_root
         self.split = split
@@ -55,6 +59,10 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
         self.jitter_sigma = jitter_sigma
         self.jitter_clip = jitter_clip
         self.color_drop_prob = color_drop_prob
+        self.chromatic_autocontrast_p = chromatic_autocontrast_p
+        self.chromatic_translation_p = chromatic_translation_p
+        self.chromatic_translation_ratio = chromatic_translation_ratio
+        self.chromatic_jitter_std = chromatic_jitter_std
 
         self.tta_conf = tta_conf if tta_conf is not None else dict(enable=False)
         if self.test_mode and self.tta_conf.get('enable'):
@@ -148,11 +156,15 @@ class ScanNetGeoDataset(Dataset, GeoDatasetMixin):
             coord_c, color_c = self.apply_training_augmentation(
                 coord_c, color_c, 
                 rot_z_range=self.rot_z_range, 
-                tilt_range=self.tilt_range
+                tilt_range=self.tilt_range,
                 scale_range=self.scale_range,
                 jitter_sigma=self.jitter_sigma,
                 jitter_clip=self.jitter_clip,
-                color_drop_prob=self.color_drop_prob
+                color_drop_prob=self.color_drop_prob,
+                chromatic_autocontrast_p=self.chromatic_autocontrast_p,
+                chromatic_translation_p=self.chromatic_translation_p,
+                chromatic_translation_ratio=self.chromatic_translation_ratio,
+                chromatic_jitter_std=self.chromatic_jitter_std
             )
 
             return self.prepare_input_dict(coord_c, color_c, segment_c, indices)

@@ -25,3 +25,4 @@ from .dataloader import MultiDatasetDataloader
 
 from .s3dis_co_train import S3DISCoTrainDataset
 from .scannet_geo import ScanNetGeoDataset
+from .semantickitti_geo import SemanticKITTIGeoDataset
