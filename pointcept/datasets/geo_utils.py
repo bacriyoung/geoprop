@@ -10,7 +10,13 @@ class GeoDatasetMixin:
     3. Sliding Window Validation Logic
     """
 
-    def apply_training_augmentation(self, coord, color, rot_z_range=[-1, 1], tilt_range=[-1/64, 1/64]):
+    def apply_training_augmentation(self, coord, color, 
+                                    rot_z_range=[-1, 1], 
+                                    tilt_range=[-1/64, 1/64],
+                                    scale_range=[0.9, 1.1], 
+                                    jitter_sigma=0.005, 
+                                    jitter_clip=0.02,
+                                    color_drop_prob=0.2):
         """
         Apply training augmentations aligned with official Pointcept PTv3 config.
         Includes:
@@ -80,13 +86,7 @@ class GeoDatasetMixin:
 
         return coord, color
 
-    def apply_training_augmentation(self, coord, color, 
-                                    rot_z_range=[-1, 1], 
-                                    tilt_range=[-1/64, 1/64],
-                                    scale_range=[0.9, 1.1], 
-                                    jitter_sigma=0.005, 
-                                    jitter_clip=0.02,
-                                    color_drop_prob=0.2):
+    def get_sliding_window_fragments(self, coord, color, segment, num_points, stride, scan_mode, tta_conf):
         """
         Generates sliding window crops for validation/testing.
         Supports combinatorial TTA (aligned with official PTv3).
@@ -110,32 +110,29 @@ class GeoDatasetMixin:
         
         # Construct TTA list (Combinatorial Strategy)
         transforms_to_apply = []
-        if tta_conf.get('enable'):
-            # 1. Base 4 Rotations
-            transforms_to_apply.extend([
-                dict(scale=1.0, rot_z=0, flip_x=False, flip_y=False),
-                dict(scale=1.0, rot_z=1, flip_x=False, flip_y=False),
-                dict(scale=1.0, rot_z=2, flip_x=False, flip_y=False),
-                dict(scale=1.0, rot_z=3, flip_x=False, flip_y=False),
-            ])
-            # 2. Rotations + Scale 0.95
-            transforms_to_apply.extend([
-                dict(scale=0.95, rot_z=0, flip_x=False, flip_y=False),
-                dict(scale=0.95, rot_z=1, flip_x=False, flip_y=False),
-                dict(scale=0.95, rot_z=2, flip_x=False, flip_y=False),
-                dict(scale=0.95, rot_z=3, flip_x=False, flip_y=False),
-            ])
-            # 3. Rotations + Scale 1.05
-            transforms_to_apply.extend([
-                dict(scale=1.05, rot_z=0, flip_x=False, flip_y=False),
-                dict(scale=1.05, rot_z=1, flip_x=False, flip_y=False),
-                dict(scale=1.05, rot_z=2, flip_x=False, flip_y=False),
-                dict(scale=1.05, rot_z=3, flip_x=False, flip_y=False),
-            ])
-            # 4. Flip
-            transforms_to_apply.append(dict(scale=1.0, rot_z=0, flip_x=True, flip_y=False))
+        
+        if tta_conf and tta_conf.get('enable'):
+            # Defaults aligned with Pointcept PTv3
+            scales = tta_conf.get('scales', [0.95, 1.05])
+            # Rotations: 0=0, 1=90, 2=180, 3=270
+            rotations = tta_conf.get('rotations', [0, 1, 2, 3]) 
+            use_flip = tta_conf.get('flip', True)
+
+            # 1. Base Rotations (Scale=1.0)
+            for r in rotations:
+                transforms_to_apply.append(dict(scale=1.0, rot_z=r, flip_x=False))
+            
+            # 2. Combinatorial: Rotations x Scales
+            for s in scales:
+                for r in rotations:
+                    transforms_to_apply.append(dict(scale=s, rot_z=r, flip_x=False))
+            
+            # 3. Flip
+            if use_flip:
+                transforms_to_apply.append(dict(scale=1.0, rot_z=0, flip_x=True))
         else:
-            transforms_to_apply = [dict(scale=1.0, rot_z=0, flip_x=False, flip_y=False)]
+            # No TTA
+            transforms_to_apply = [dict(scale=1.0, rot_z=0, flip_x=False)]
 
         for x in grid_x:
             for y in grid_y:
@@ -151,7 +148,7 @@ class GeoDatasetMixin:
                     for t_cfg in transforms_to_apply:
                         coord_aug = coord_chunk.copy()
                         
-                        # Apply Combinatorial TTA
+                        # Apply TTA Transform
                         rot_k = t_cfg.get('rot_z', 0) 
                         if rot_k > 0:
                             angle = rot_k * np.pi / 2
