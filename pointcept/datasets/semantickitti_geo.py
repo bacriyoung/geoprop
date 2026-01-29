@@ -234,7 +234,7 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
                 scale_range=self.scale_range,
                 jitter_sigma=self.jitter_sigma,
                 jitter_clip=self.jitter_clip,
-                color_drop_prob=self.color_drop_prob
+                color_drop_prob=self.color_drop_prob,
                 chromatic_autocontrast_p=self.chromatic_autocontrast_p,
                 chromatic_translation_p=self.chromatic_translation_p,
                 chromatic_translation_ratio=self.chromatic_translation_ratio,
