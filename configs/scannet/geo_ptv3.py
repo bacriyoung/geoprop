@@ -181,7 +181,12 @@ data = dict(
         stride=1.5,       
         transform=None,
         ignore_index=ignore_index,
-        tta_conf=dict(enable=True)
+        tta_conf=dict(
+            enable=True,
+            scales=[0.95, 1.05],
+            rotations=[0, 1, 2, 3],
+            flip=True
+        )
     ),
 )
 

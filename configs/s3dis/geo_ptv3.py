@@ -175,7 +175,12 @@ data = dict(
         stride=2.0,       
         transform=None,   
         ignore_index=ignore_index,
-        tta_conf=dict(enable=True)
+        tta_conf=dict(
+            enable=True,
+            scales=[0.95, 1.05],    # 组合增强的尺度
+            rotations=[0, 1, 2, 3], # 0, 90, 180, 270 度
+            flip=True               # 开启翻转
+        )
     ),
 )
 

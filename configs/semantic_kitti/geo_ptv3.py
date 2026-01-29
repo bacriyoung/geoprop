@@ -152,8 +152,8 @@ data = dict(
         labeled_ratio=0.001, # Weak supervision
         ignore_index=ignore_index, 
         test_mode=False,
-        rot_z_range=[0,0],
-        tilt_range=[-1/64, 1/64],
+        rot_z_range=[-1, 1],
+        tilt_range=[0, 0],
         scale_range=[0.9, 1.1],
         jitter_sigma=0.005,
         color_drop_prob=0.2,
@@ -186,7 +186,12 @@ data = dict(
         transform=None,
         ignore_index=ignore_index,
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
-        tta_conf=dict(enable=True) 
+        tta_conf=dict(
+            enable=True,
+            scales=[0.95, 1.05],
+            rotations=[0, 1, 2, 3],
+            flip=True
+        )
     ),
 )
 
