@@ -158,10 +158,10 @@ data = dict(
         jitter_sigma=0.005,
         color_drop_prob=0.2,
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
-        chromatic_autocontrast_p=0.2,
-        chromatic_translation_p=0.95,
-        chromatic_translation_ratio=0.05,
-        chromatic_jitter_std=0.05,
+        chromatic_autocontrast_p=0.0,
+        chromatic_translation_p=0.0,
+        chromatic_translation_ratio=0.0,
+        chromatic_jitter_std=0.0,
     ),
 
     val=dict(
