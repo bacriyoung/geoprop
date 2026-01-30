@@ -17,7 +17,7 @@ eval_epoch = epoch_num
 # Batch Size: Outdoor point clouds are large (120k points). 
 # BS=2 or 4 is recommended for 24G/40G VRAM. 
 batch_size = 2  
-num_worker = 4 
+num_worker = 2 
 save_freq = None
 
 # [AMP] Enable Mixed Precision

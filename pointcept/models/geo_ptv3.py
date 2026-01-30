@@ -24,7 +24,7 @@ def compute_covariance_features(features, knn_indices, k=16):
     cov_flat = cov.view(b_dim, n_dim, c_dim*c_dim)
     return cov_flat.to(dtype_backup)
 
-def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=10.0):
+def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=1.0):
     b_dim, n_dim, _ = xyz.shape
     if knn_idx is None:
         xyz_flat = xyz.view(-1, 3).contiguous()

@@ -206,3 +206,26 @@ class GeoDatasetMixin:
             
         np.random.shuffle(indices)
         return indices
+
+    def isotropic_normalize(self, coord, scale_margin=1e-6):
+        """
+        Isotropic Normalization (0-1) helper.
+        Maps coordinates to [0, 1] range while preserving aspect ratio.
+        Used for reconstruction target to prevent gradient explosion.
+        """
+        if isinstance(coord, np.ndarray):
+            coord_t = torch.from_numpy(coord).float()
+        else:
+            coord_t = coord.float()
+            
+        xyz_min = coord_t.min(dim=0)[0]
+        xyz_max = coord_t.max(dim=0)[0]
+        
+        # Use max extent to preserve aspect ratio (Isotropic)
+        scale = (xyz_max - xyz_min).max() + scale_margin
+        
+        coord_norm = (coord_t - xyz_min) / scale
+        
+        if isinstance(coord, np.ndarray):
+            return coord_norm.numpy()
+        return coord_norm

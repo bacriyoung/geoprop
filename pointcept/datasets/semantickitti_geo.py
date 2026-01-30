@@ -264,16 +264,14 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
         target_t = torch.from_numpy(segment).long()
 
         ptv3_coord = coord_t - coord_t.min(0)[0]
-        
-        # [Step B] Normalize BACK to [0, 1] for network input
+        norm_coord = self.isotropic_normalize(ptv3_coord)
         ptv3_color = color_t / 255.0
-        
         ptv3_feat = torch.cat([ptv3_coord, ptv3_color], dim=1)
         grid_coord = (ptv3_coord / self.voxel_size).int()
 
         iso_coord = ptv3_coord.clone()
         jafar_color = ptv3_color 
-        jafar_feat = torch.cat([jafar_color, iso_coord], dim=1) 
+        jafar_feat = torch.cat([jafar_color, norm_coord], dim=1)
 
         input_dict = dict(
             coord=ptv3_coord, 
