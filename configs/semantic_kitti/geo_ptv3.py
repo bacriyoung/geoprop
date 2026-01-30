@@ -10,9 +10,6 @@ test_only = False
 seed = 38345489
 
 # Training Parameters
-# SemanticKITTI is huge. PTv2 uses 50 epochs.
-# GeoProp weak supervision might need more epochs to propagate labels, 
-# but let's start with 50 to align with standard baselines.
 epoch_num = 50 
 epoch = epoch_num 
 eval_epoch = epoch_num 
@@ -158,10 +155,14 @@ data = dict(
         jitter_sigma=0.005,
         color_drop_prob=0.2,
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
+        # Disable all chromatic augmentations for intensity
         chromatic_autocontrast_p=0.0,
         chromatic_translation_p=0.0,
         chromatic_translation_ratio=0.0,
         chromatic_jitter_std=0.0,
+        # Use class-balanced sparse masks
+        use_precomputed_mask=True,
+        mask_root='data/semantic_kitti/masks/balanced_0.001',
     ),
 
     val=dict(
@@ -207,8 +208,6 @@ hooks = [
     dict(type="ModelHook"),
     dict(type="IterationTimer", warmup_iter=100),
     dict(type="InformationWriter"),
-    dict(type="SemSegEvaluator", ignore_index=ignore_index),
+    dict(type="SemSegEvaluator"),
     dict(type="CheckpointSaver", save_freq=save_freq),
-    # PreciseEvaluator on Outdoor data can be very slow, disable or use carefully
-    # dict(type="PreciseEvaluator", test_last=False, ignore_index=ignore_index),
 ]

@@ -302,7 +302,7 @@ class GeoPTV3(nn.Module):
         batch_start = (torch.arange(batch_size_val, device=j_coord.device) * N_current).view(batch_size_val, 1, 1)
         shared_knn_idx = idx_flat.view(batch_size_val, N_current, 16) - batch_start
         
-        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=1.0)
+        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=10.0)
         
         if self.extra_feat_dim > 0:
             extra_feat = j_feat_raw[:, :, :self.extra_feat_dim]
