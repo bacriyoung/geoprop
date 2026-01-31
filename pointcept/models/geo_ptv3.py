@@ -33,6 +33,7 @@ def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=1.0):
         batch_start = (torch.arange(b_dim, device=xyz.device) * n_dim).view(b_dim, 1, 1)
         knn_idx = idx_flat.view(b_dim, n_dim, k) - batch_start
     geo_blobs = compute_covariance_features(xyz * scale, knn_idx, k)
+    geo_blobs = torch.sign(geo_blobs) * torch.pow(torch.abs(geo_blobs) + 1e-8, 0.25)
     return geo_blobs 
 
 class DecoupledPointJAFAR(nn.Module):
@@ -302,7 +303,7 @@ class GeoPTV3(nn.Module):
         batch_start = (torch.arange(batch_size_val, device=j_coord.device) * N_current).view(batch_size_val, 1, 1)
         shared_knn_idx = idx_flat.view(batch_size_val, N_current, 16) - batch_start
         
-        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=10.0)
+        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=1.0)
         
         if self.extra_feat_dim > 0:
             extra_feat = j_feat_raw[:, :, :self.extra_feat_dim]

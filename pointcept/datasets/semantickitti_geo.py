@@ -116,7 +116,7 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
     def get_data_list(self):
         data_list = []
         for seq in self.seq_list:
-            seq_path = os.path.join(self.data_root,'sequences', seq)
+            seq_path = os.path.join(self.data_root, 'dataset', 'sequences', seq)
             velodyne_path = os.path.join(seq_path, 'velodyne')
             
             if not os.path.exists(velodyne_path):
@@ -155,7 +155,7 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
     def get_class_balanced_mask(self, segment, name):
         """ Lazy generation of balanced mask """
         seq_id, frame_id = name.split('_')
-        save_dir = os.path.join(self.mask_root, 'dataset', 'sequences', seq_id) # Consistent structure
+        save_dir = os.path.join(self.mask_root, 'sequences', seq_id) # Consistent structure
         save_path = os.path.join(save_dir, f"{frame_id}.npy")
 
         if os.path.exists(save_path):
@@ -263,21 +263,18 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
         color_t = torch.from_numpy(color).float()
         target_t = torch.from_numpy(segment).long()
 
-        scene_scale_factor = 10.0 
-
-        ptv3_coord_physical = coord_t - coord_t.min(0)[0]
-        ptv3_coord_scaled = ptv3_coord_physical / scene_scale_factor
-        grid_coord = (ptv3_coord_physical / self.voxel_size).int()
+        ptv3_coord = coord_t - coord_t.min(0)[0]
+        norm_coord = self.isotropic_normalize(ptv3_coord)
         ptv3_color = color_t / 255.0
-        ptv3_feat = torch.cat([ptv3_coord_scaled, ptv3_color], dim=1)
-        
-        norm_coord = self.isotropic_normalize(ptv3_coord_scaled)
+        ptv3_feat = torch.cat([ptv3_coord, ptv3_color], dim=1)
+        grid_coord = (ptv3_coord / self.voxel_size).int()
+
+        iso_coord = ptv3_coord.clone()
         jafar_color = ptv3_color 
-        jafar_feat = torch.cat([jafar_color, norm_coord], dim=1) 
-        iso_coord = ptv3_coord_scaled.clone()
+        jafar_feat = torch.cat([jafar_color, norm_coord], dim=1)
 
         input_dict = dict(
-            coord=ptv3_coord_scaled,
+            coord=ptv3_coord, 
             grid_coord=grid_coord,
             ptv3_feat=ptv3_feat,     
             jafar_coord=coord_t,

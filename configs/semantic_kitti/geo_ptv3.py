@@ -17,7 +17,7 @@ eval_epoch = epoch_num
 # Batch Size: Outdoor point clouds are large (120k points). 
 # BS=2 or 4 is recommended for 24G/40G VRAM. 
 batch_size = 2  
-num_worker = 1 
+num_worker = 2 
 save_freq = None
 
 # [AMP] Enable Mixed Precision
@@ -171,9 +171,9 @@ data = dict(
         data_root=data_root,
         num_points=120000, 
         voxel_size=0.05,
-        test_mode=True,   
+        test_mode=False,   
         scan_mode='xy',
-        stride=4.0, # Larger stride for outdoor
+        stride=20.0, # Larger stride for outdoor
         transform=None,
         loop=1,
         ignore_index=ignore_index,
@@ -189,7 +189,7 @@ data = dict(
         voxel_size=0.05,
         test_mode=True, 
         scan_mode='xy',
-        stride=2.0,       
+        stride=15.0,       
         transform=None,
         ignore_index=ignore_index,
         clip_range=[-35.2, -35.2, -4, 35.2, 35.2, 2],
