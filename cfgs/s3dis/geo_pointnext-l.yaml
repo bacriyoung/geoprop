@@ -38,7 +38,7 @@ model:
 # -----------------------------------------------------------------
 # 明确指定使用 GeoCoTrainLoss
 # -----------------------------------------------------------------
-criterion:
+criterion_args:
   NAME: GeoCoTrainLoss
   lambda_main: 1.0
   lambda_aux: 1.0

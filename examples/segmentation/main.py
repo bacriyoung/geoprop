@@ -387,6 +387,8 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, scaler
             # print(f"Memory after backward is {mem}")
             
         # update confusion matrix
+        if isinstance(logits, dict):
+            logits = logits['seg_logits']
         cm.update(logits.argmax(dim=1), target)
         loss_meter.update(loss.item())
 
@@ -411,6 +413,9 @@ def validate(model, val_loader, cfg, num_votes=1, data_transform=None, epoch=-1,
         data['epoch'] = epoch
         data['iter'] = total_iter 
         logits = model(data)
+        if isinstance(logits, dict):
+            logits = logits['seg_logits']
+            
         if 'mask' not in cfg.criterion_args.NAME or cfg.get('use_maks', False):
             cm.update(logits.argmax(dim=1), target)
         else:
