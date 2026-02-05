@@ -12,14 +12,14 @@ from .point_transformer_v3 import *
 # from .octformer import *
 # from .oacnns import *
 
-# Semantic Segmentation (只保留你的)
+# Semantic Segmentation 
 from .geo_ptv3 import GeoPTV3
 
-# Instance Segmentation (全部注释/删除)
+# Instance Segmentation 
 # from .point_group import *
 # from .sgiformer import *
 
-# Pretraining (全部注释/删除)
+# Pretraining 
 # from .masked_scene_contrast import *
 # from .point_prompt_training import *
 # from .sonata import *

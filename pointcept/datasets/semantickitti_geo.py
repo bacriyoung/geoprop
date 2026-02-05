@@ -192,8 +192,8 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
             # [Step A] Scale Intensity to 0-255 for compatibility
             intensity = intensity * 255.0
 
-            # 2. Load Label
-            if not self.test_mode and os.path.exists(data_info['label_path']):
+            # 2. Load Label 
+            if os.path.exists(data_info['label_path']):
                 label_raw = np.fromfile(data_info['label_path'], dtype=np.uint32).reshape(-1)
                 sem_label = label_raw & 0xFFFF 
                 valid_mask = sem_label < len(self.learning_map)
@@ -228,11 +228,11 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
             return self.__getitem__(np.random.randint(0, len(self)))
 
         if not self.test_mode:
-            # 6. KNN Sampling
+            # 6. KNN Sampling (Training Only)
             indices = self.get_knn_indices(coord, center=None, num_points=self.num_points)
             coord_c, color_c, segment_c = coord[indices], color[indices], segment[indices]
             
-            # 7. Apply Augmentation (Color augs are disabled in config, so this just does geometric/jitter)
+            # 7. Apply Augmentation
             coord_c, color_c = self.apply_training_augmentation(
                 coord_c, color_c, 
                 rot_z_range=self.rot_z_range, 
