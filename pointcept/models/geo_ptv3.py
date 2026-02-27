@@ -7,196 +7,172 @@ from pointcept.models.builder import MODELS
 from pointcept.models.losses import LOSSES
 from pointcept.models.point_transformer_v3.point_transformer_v3m1_base import PointTransformerV3
 
-def compute_covariance_features(features, knn_indices, k=16):
-    b_dim, n_dim, c_dim = features.shape
-    batch_idx = torch.arange(b_dim, device=features.device).view(b_dim, 1, 1).expand(-1, n_dim, k)
-    feat_flat = features.view(b_dim*n_dim, c_dim)
-    idx_flat = knn_indices.view(b_dim, n_dim, k) + (batch_idx * n_dim)
-    idx_flat = idx_flat.view(-1)
-    neighbors = feat_flat[idx_flat].view(b_dim, n_dim, k, c_dim)
-
-    dtype_backup = features.dtype
-    neighbors = neighbors.float()
-    local_mean = neighbors.mean(dim=2, keepdim=True) 
-    centered = neighbors - local_mean 
-    centered_t = centered.transpose(2, 3)
-    cov = torch.matmul(centered_t, centered) / (k - 1 + 1e-6)
-    cov_flat = cov.view(b_dim, n_dim, c_dim*c_dim)
-    return cov_flat.to(dtype_backup)
-
-def compute_lean_gblobs(xyz, k=16, knn_idx=None, scale=1.0):
-    b_dim, n_dim, _ = xyz.shape
-    if knn_idx is None:
-        xyz_flat = xyz.view(-1, 3).contiguous()
-        offset = torch.arange(1, b_dim + 1, dtype=torch.int32, device=xyz.device) * n_dim
-        idx_flat = pointops.knn_query(k, xyz_flat, offset)[0].long()
-        batch_start = (torch.arange(b_dim, device=xyz.device) * n_dim).view(b_dim, 1, 1)
-        knn_idx = idx_flat.view(b_dim, n_dim, k) - batch_start
-    geo_blobs = compute_covariance_features(xyz * scale, knn_idx, k)
-    geo_blobs = torch.sign(geo_blobs) * torch.pow(torch.abs(geo_blobs) + 1e-8, 0.25)
-    return geo_blobs 
-
-class DecoupledPointJAFAR(nn.Module):
-    def __init__(self, qk_dim=64, k=16, input_geo_dim=12, sem_dim=192, num_classes=13): 
+# =================================================================================
+# Sparse Anchor JAFAR: 单流稀疏几何修正模块
+# =================================================================================
+class SparseAnchorJAFAR(nn.Module):
+    def __init__(self, qk_dim=64, input_feat_dim=6, sem_dim=192, num_classes=13): 
         super().__init__()
         self.qk_dim = qk_dim
-        self.k = k
-        self.input_geo_dim = input_geo_dim 
+        self.input_feat_dim = input_feat_dim 
         self.sem_dim = sem_dim 
 
+        # 几何编码器：直接处理 (XYZ, RGB)
         self.geom_encoder = nn.Sequential(
-            nn.Conv1d(self.input_geo_dim, qk_dim, 1),
+            nn.Conv1d(self.input_feat_dim, qk_dim, 1),
             nn.GroupNorm(8, qk_dim), 
             nn.ReLU(),
             nn.Conv1d(qk_dim, qk_dim, 1),
             nn.GroupNorm(8, qk_dim), 
             nn.ReLU()
         )
+        
+        # 语义 Value 投影
         self.val_proj = nn.Sequential(
             nn.Conv1d(sem_dim, qk_dim, 1),
             nn.GroupNorm(8, qk_dim), 
             nn.ReLU()
         )
+        
         self.geo_query = nn.Conv1d(qk_dim, qk_dim, 1)
         self.geo_key = nn.Conv1d(qk_dim, qk_dim, 1)
+        
+        # 相对位置编码 (Geometric Awareness)
+        # 输入: dx, dy, dz, dist
         self.rel_pos_mlp = nn.Sequential(
-            nn.Conv2d(7, qk_dim, 1), 
+            nn.Conv2d(4, qk_dim, 1), 
             nn.GroupNorm(8, qk_dim), 
             nn.ReLU(),
             nn.Conv2d(qk_dim, qk_dim, 1)
         )
-        self.bdy_head = nn.Sequential(
-            nn.Conv1d(qk_dim, 32, 1), 
-            nn.GroupNorm(4, 32),      
-            nn.ReLU(),
-            nn.Conv1d(32, 1, 1)
-        )
-        self.softmax = nn.Softmax(dim=-1)
+        
         self.cls_head = nn.Linear(qk_dim, num_classes)
 
+        # 重建头 (自监督：尝试重建输入的 Raw Feature)
         self.rec_head = nn.Sequential(
             nn.Linear(qk_dim, qk_dim),
             nn.LayerNorm(qk_dim),
             nn.ReLU(),
-            nn.Linear(qk_dim, 6) 
+            nn.Linear(qk_dim, input_feat_dim) 
         )
 
     def _gather_val_efficient(self, tensor, idx):
-        b_dim, c_dim, n_dim = tensor.shape
-        _, _, k_dim = idx.shape
-        tensor_flat = tensor.transpose(1, 2).contiguous().view(b_dim * n_dim, c_dim)
-        batch_offset = torch.arange(b_dim, device=tensor.device).view(b_dim, 1, 1) * n_dim
+        # tensor: (B, C, N_anchor)
+        # idx: (B, N_query, k) -> 指向 Anchor 的索引
+        b_dim, c_dim, n_anchor = tensor.shape
+        _, n_query, k_dim = idx.shape
+        
+        tensor_flat = tensor.transpose(1, 2).contiguous().view(b_dim * n_anchor, c_dim)
+        batch_offset = torch.arange(b_dim, device=tensor.device).view(b_dim, 1, 1) * n_anchor
         flat_idx = (idx + batch_offset).view(-1)
-        val = tensor_flat[flat_idx].view(b_dim, n_dim, k_dim, c_dim).permute(0, 3, 1, 2)
+        
+        val = tensor_flat[flat_idx].view(b_dim, n_query, k_dim, c_dim).permute(0, 3, 1, 2)
         return val
 
-    def forward(self, xyz, jafar_feat, sem_feat, knn_idx=None):
-        b_dim, n_dim, _ = jafar_feat.shape
-        jafar_feat_t = jafar_feat.transpose(1, 2).contiguous()
-        sem_feat_t = sem_feat.transpose(1, 2).contiguous()
-        xyz_t = xyz.transpose(1, 2).contiguous()
+    def forward(self, 
+                feat_q, sem_q, 
+                feat_k, sem_k, 
+                knn_idx):
+        """
+        feat_q: (B, N_q, 6) - XYZ+RGB of Query
+        sem_q: (B, N_q, C_sem) - PTV3 feat of Query
+        feat_k: (B, N_k, 6) - XYZ+RGB of Anchor
+        sem_k: (B, N_k, C_sem) - PTV3 feat of Anchor
+        knn_idx: (B, N_q, k) - Indices into Anchor
+        """
         
-        geom_emb = self.geom_encoder(jafar_feat_t)
-        bdy_logits = self.bdy_head(geom_emb) 
-        Q = self.geo_query(geom_emb)
-        K = self.geo_key(geom_emb)
-        V = self.val_proj(sem_feat_t)
+        # 1. 编码 Query 几何
+        feat_q_t = feat_q.transpose(1, 2).contiguous()
+        geom_emb_q = self.geom_encoder(feat_q_t)
+        Q = self.geo_query(geom_emb_q) # (B, Dim, N_q)
 
-        if knn_idx is None:
-            xyz_flat = xyz.view(-1, 3).contiguous()
-            offset = torch.arange(1, b_dim + 1, dtype=torch.int32, device=xyz.device) * n_dim
-            k_idx_flat = pointops.knn_query(self.k, xyz_flat, offset)[0].long()
-            batch_start = (torch.arange(b_dim, device=xyz.device) * n_dim).view(b_dim, 1, 1)
-            knn_idx = k_idx_flat.view(b_dim, n_dim, self.k) - batch_start
+        # 2. 编码 Key 几何 (Anchors)
+        feat_k_t = feat_k.transpose(1, 2).contiguous()
+        geom_emb_k = self.geom_encoder(feat_k_t)
+        K_all = self.geo_key(geom_emb_k)
+        K_g = self._gather_val_efficient(K_all, knn_idx) # (B, Dim, N_q, k)
+
+        # 3. 编码 Value 语义 (Anchors)
+        sem_k_t = sem_k.transpose(1, 2).contiguous()
+        V_all = self.val_proj(sem_k_t)
+        V_g = self._gather_val_efficient(V_all, knn_idx) # (B, Dim, N_q, k)
+
+        # 4. 相对位置编码
+        # 分离出 XYZ (前3维)
+        xyz_q = feat_q[:, :, :3]
+        xyz_k = feat_k[:, :, :3]
         
-        K_g = self._gather_val_efficient(K, knn_idx)
-        xyz_g = self._gather_val_efficient(xyz_t, knn_idx)
-        V_g = self._gather_val_efficient(V, knn_idx)
+        xyz_k_t = xyz_k.transpose(1, 2).contiguous()
+        xyz_g = self._gather_val_efficient(xyz_k_t, knn_idx) # (B, 3, N_q, k)
         
-        xyz_t_f32 = xyz_t.float()
-        xyz_g_f32 = xyz_g.float()
-        rel_diff = xyz_t_f32.unsqueeze(-1) - xyz_g_f32
+        xyz_q_t = xyz_q.transpose(1, 2).contiguous()
+        xyz_q_expanded = xyz_q_t.unsqueeze(-1)
         
-        sq_sum = torch.sum(rel_diff ** 2, dim=1, keepdim=True)
-        rel_dist = torch.sqrt(sq_sum + 1e-10)
+        rel_diff = xyz_q_expanded - xyz_g 
+        rel_dist = torch.sqrt(torch.sum(rel_diff ** 2, dim=1, keepdim=True) + 1e-10)
         
-        rel_dist_safe = torch.clamp(rel_dist, min=1e-5)
-        rel_direction = rel_diff / rel_dist_safe
-        
-        rel_geo_feat = torch.cat([rel_diff, rel_dist, rel_direction], dim=1)
-        rel_geo_feat = rel_geo_feat.type_as(xyz)
-        
+        # (B, 4, N_q, k)
+        rel_geo_feat = torch.cat([rel_diff, rel_dist], dim=1) 
         pos_enc = self.rel_pos_mlp(rel_geo_feat)
-        
+
+        # 5. Attention Interaction
+        # 利用几何相似度 (Q * K) 指导 语义聚合 (V)
         attn_logits = torch.sum(Q.unsqueeze(-1) * (K_g + pos_enc), dim=1) / (self.qk_dim ** 0.5)
         affinity = torch.softmax(attn_logits.float(), dim=-1).type_as(attn_logits)
         
-        refined_feat = torch.sum(affinity.unsqueeze(1) * V_g, dim=-1)
-        refined_feat = refined_feat + V 
+        # 6. Aggregation
+        refined_feat = torch.sum(affinity.unsqueeze(1) * V_g, dim=-1) # (B, Dim, N_q)
+        
+        # Residual: 加上 Query 自己的 PTV3 特征 (做过投影)
+        sem_q_t = sem_q.transpose(1, 2).contiguous()
+        V_q = self.val_proj(sem_q_t)
+        refined_feat = refined_feat + V_q
+        
+        # 7. Prediction Heads
         refined_feat_flat = refined_feat.transpose(1, 2).contiguous().view(-1, self.qk_dim)
         logits = self.cls_head(refined_feat_flat)
-        rec_phys = self.rec_head(refined_feat_flat)
-        return logits, affinity, knn_idx, refined_feat_flat, bdy_logits, rec_phys
+        rec = self.rec_head(refined_feat_flat) 
+        
+        return logits, rec
 
 @MODELS.register_module()
 class GeoPTV3(nn.Module):
     def __init__(self, backbone_ptv3_cfg, geo_input_dim=6, num_classes=13,
-                 num_points=80000, geo_scale=10.0, criteria=None):
+                 criteria=None, query_ratio=0.25, anchor_ratio=0.5): 
         super().__init__()
         
         valid_params = inspect.signature(PointTransformerV3.__init__).parameters
         clean_cfg = {k: v for k, v in backbone_ptv3_cfg.items() if k in valid_params}
         self.sem_stream = PointTransformerV3(**clean_cfg)
-        self.ptv3_in_channels = backbone_ptv3_cfg.get("in_channels", 6)
         
+        # PTV3 Decoder Channels
         dec_channels = backbone_ptv3_cfg.get('dec_channels', [48, 96, 192, 384])
         self.sem_feat_dim = dec_channels[0]
         self.aux_head = nn.Linear(self.sem_feat_dim, num_classes)
         
-        self.num_points = num_points
-        self.geo_scale = geo_scale 
-        self.extra_feat_dim = max(0, geo_input_dim - 3)
-        self.real_geo_dim = 9 + self.extra_feat_dim
+        self.ptv3_in_channels = backbone_ptv3_cfg.get("in_channels", 6)
+        self.query_ratio = query_ratio   
+        self.anchor_ratio = anchor_ratio 
+        self.jafar_in_dim = 6 # Fixed to XYZ+RGB
         
-        print(f"[GeoPTV3] JAFAR Input Dim = {self.real_geo_dim}")
+        print(f"[GeoPTV3] Anchor Mode. Query Top {query_ratio*100}%, Anchor Bottom {anchor_ratio*100}%")
         
-        self.geo_stream = DecoupledPointJAFAR(
-            qk_dim=64, k=16, 
-            input_geo_dim=self.real_geo_dim,
+        self.geo_stream = SparseAnchorJAFAR(
+            qk_dim=64,
+            input_feat_dim=self.jafar_in_dim,
             sem_dim=self.sem_feat_dim, 
             num_classes=num_classes
         )
-        self.register_buffer("prototypes", torch.zeros(num_classes, 64))
-        self.register_buffer("proto_count", torch.zeros(num_classes))
-        self.momentum = 0.99
         
         if criteria is not None:
             self.criteria = LOSSES.build(criteria)
         else:
             self.criteria = None
 
-    def update_prototypes(self, features, labels):
-        import torch.distributed as dist
-        with torch.no_grad():
-            for c in range(self.aux_head.out_features):
-                mask = (labels == c)
-                if mask.sum() > 0:
-                    local_sum = features[mask].sum(0)
-                    local_count = mask.sum().float()
-                else:
-                    local_sum = torch.zeros(features.shape[1], device=features.device)
-                    local_count = torch.tensor(0.0, device=features.device)
-                
-                if dist.is_available() and dist.is_initialized():
-                    dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
-                    dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
-                
-                if local_count > 0:
-                    global_mean = local_sum / local_count
-                    self.prototypes[c] = self.momentum * self.prototypes[c] + (1 - self.momentum) * global_mean
-                    self.proto_count[c] += 1
-
     def forward(self, input_dict):
+        # ------------------------------------------------------------------
+        # Fragment Handling (Validation/Test)
+        # ------------------------------------------------------------------
         if "fragment_list" in input_dict:
             fragment_list = input_dict["fragment_list"][0]
             full_segment = input_dict["segment"].view(-1)
@@ -222,136 +198,116 @@ class GeoPTV3(nn.Module):
             output_dict = {"seg_logits": logits_eval, "target": full_segment, "loss": val_loss}
             return output_dict
 
-        if "iso_coord" in input_dict:
-            j_coord = input_dict['jafar_coord']
-            j_feat_raw = input_dict['jafar_feat']
-            iso_coord = input_dict['iso_coord']
+        # ------------------------------------------------------------------
+        # 1. PTV3 前向传播
+        # ------------------------------------------------------------------
+        coord = input_dict['coord'] # (N, 3)
+        feat = input_dict.get("ptv3_feat", input_dict.get("feat")) # Usually (N, 6) or (N, 3)
+        
+        # 构造统一的 raw_input (N, 6) -> XYZ + RGB
+        if feat.shape[1] == 3:
+            raw_input = torch.cat([coord, feat], dim=1)
         else:
-            j_coord = input_dict['coord'].clone()
-            j_feat_raw = input_dict['feat'].clone()
-            iso_coord = j_coord - j_coord.min(0)[0]
+            raw_input = feat # Assume feat already contains XYZ+RGB if dim=6
             
-        if j_coord.dim() == 2:
-            total_points = j_coord.shape[0]
-            if self.training:
-                if "batch" in input_dict:
-                    batch_size_val = input_dict["batch"].max().item() + 1
-                else:
-                    batch_size_val = total_points // self.num_points
-                valid_len = batch_size_val * self.num_points
-                j_coord = j_coord[:valid_len].view(batch_size_val, self.num_points, -1)
-                j_feat_raw = j_feat_raw[:valid_len].view(batch_size_val, self.num_points, -1)
-                iso_coord = iso_coord[:valid_len].view(batch_size_val, self.num_points, -1)
-            else:
-                if "batch" in input_dict:
-                    batch_size_val = input_dict["batch"].max().item() + 1
-                else:
-                    batch_size_val = 1
-                if total_points % batch_size_val == 0:
-                    points_per_batch = total_points // batch_size_val
-                    j_coord = j_coord.view(batch_size_val, points_per_batch, -1)
-                    j_feat_raw = j_feat_raw.view(batch_size_val, points_per_batch, -1)
-                    iso_coord = iso_coord.view(batch_size_val, points_per_batch, -1)
-                else:
-                    batch_size_val = 1
-                    j_coord = j_coord.view(1, total_points, -1)
-                    j_feat_raw = j_feat_raw.view(1, total_points, -1)
-                    iso_coord = iso_coord.view(1, total_points, -1)
-                if "batch" not in input_dict:
-                    input_dict["batch"] = torch.zeros(total_points, device=j_coord.device, dtype=torch.long)
-        else:
-            batch_size_val = j_coord.shape[0]
-
         ptv3_input = {}
-        raw_coord = input_dict["coord"]
-        raw_feat = input_dict.get("ptv3_feat", input_dict.get("feat"))
-        raw_grid = input_dict.get("grid_coord")
-        if raw_coord.dim() == 3: 
-            flat_coord = raw_coord.reshape(-1, 3).contiguous()
-            flat_feat = raw_feat.reshape(-1, raw_feat.shape[-1]).contiguous()
-            if raw_grid is not None:
-                flat_grid = raw_grid.reshape(-1, 3).contiguous().int()
-            N_total = raw_coord.shape[1]
-            ptv3_input["batch"] = torch.arange(batch_size_val, device=raw_coord.device).repeat_interleave(N_total)
+        ptv3_input["coord"] = coord
+        ptv3_input["feat"] = feat # PTV3内部处理维度
+        ptv3_input["grid_coord"] = input_dict.get("grid_coord", (coord / 0.02).int())
+        ptv3_input["batch"] = input_dict.get("batch", torch.zeros(coord.shape[0], device=coord.device).long())
+        
+        # Offset Generation
+        batch_idx = ptv3_input["batch"]
+        if "batch" in input_dict:
+             batch_size_val = input_dict["batch"].max().item() + 1
         else:
-            flat_coord = raw_coord
-            flat_feat = raw_feat
-            flat_grid = raw_grid
-            if "batch" in input_dict:
-                ptv3_input["batch"] = input_dict["batch"]
-            else:
-                current_N = flat_coord.shape[0] // batch_size_val
-                ptv3_input["batch"] = torch.arange(batch_size_val, device=raw_coord.device).repeat_interleave(current_N)
-        ptv3_input["coord"] = flat_coord
-        ptv3_input["feat"] = flat_feat
-        if self.ptv3_in_channels == 6 and flat_feat.shape[1] == 3:
-            ptv3_input["feat"] = torch.cat([flat_feat, flat_coord], dim=1)
-        if flat_grid is None:
-            ptv3_input["grid_coord"] = (flat_coord / 0.02).int()
-        else:
-            ptv3_input["grid_coord"] = flat_grid
+             batch_size_val = 1
+        _, counts = torch.unique(batch_idx, return_counts=True)
+        offset = torch.cumsum(counts, dim=0).int()
 
-        sem_feat_sparse = self.sem_stream(ptv3_input).feat 
-        aux_logits = self.aux_head(sem_feat_sparse) 
-        
-        sem_feat_dense = sem_feat_sparse.view(batch_size_val, -1, sem_feat_sparse.shape[-1])
-        N_current = j_coord.shape[1]
+        # Forward Backbone
+        sem_feat = self.sem_stream(ptv3_input).feat 
+        aux_logits = self.aux_head(sem_feat) 
 
-        j_coord_flat = j_coord.view(-1, 3).contiguous()
-        j_offset = torch.arange(1, batch_size_val + 1, dtype=torch.int32, device=j_coord.device) * N_current
-        idx_flat = pointops.knn_query(16, j_coord_flat, j_offset)[0].long()
-        batch_start = (torch.arange(batch_size_val, device=j_coord.device) * N_current).view(batch_size_val, 1, 1)
-        shared_knn_idx = idx_flat.view(batch_size_val, N_current, 16) - batch_start
+        # ------------------------------------------------------------------
+        # 2. 锚点与难点挖掘 (Global Sorting)
+        # ------------------------------------------------------------------
+        with torch.no_grad():
+            probs = torch.softmax(aux_logits, dim=-1)
+            confidence, _ = torch.max(probs, dim=-1) 
+            
+            # Global Sort by Confidence
+            sorted_indices = torch.argsort(confidence) 
+            
+            num_total = confidence.shape[0]
+            k_query = int(num_total * self.query_ratio)   
+            k_anchor = int(num_total * self.anchor_ratio) 
+            
+            # Slice Indices
+            query_indices = sorted_indices[:k_query]      # Hardest
+            anchor_indices = sorted_indices[-k_anchor:]   # Easiest
+            
+            # Re-sort indices to match batch order (Critical for KNN Offset)
+            query_indices, _ = torch.sort(query_indices)
+            anchor_indices, _ = torch.sort(anchor_indices)
+            
+            # Generate Subset Offsets
+            def get_subset_offset(indices, original_batch_idx, batch_size):
+                sub_batch = original_batch_idx[indices]
+                counts_full = torch.zeros(batch_size, device=indices.device, dtype=torch.int32)
+                present_b, present_c = torch.unique(sub_batch, return_counts=True)
+                counts_full[present_b] = present_c.int()
+                return torch.cumsum(counts_full, dim=0).int()
+
+            query_offset = get_subset_offset(query_indices, batch_idx, batch_size_val)
+            anchor_offset = get_subset_offset(anchor_indices, batch_idx, batch_size_val)
+
+        # ------------------------------------------------------------------
+        # 3. 单次稀疏 KNN (Query -> Anchor)
+        # ------------------------------------------------------------------
+        xyz_q = coord[query_indices]
+        xyz_k = coord[anchor_indices]
         
-        geo_blobs = compute_lean_gblobs(iso_coord, k=16, knn_idx=shared_knn_idx, scale=1.0)
+        # idx_in_anchor: (N_query, 16) - Index relative to xyz_k
+        idx_in_anchor = pointops.knn_query(16, xyz_k, anchor_offset, xyz_q, query_offset)[0].long()
         
-        if self.extra_feat_dim > 0:
-            extra_feat = j_feat_raw[:, :, :self.extra_feat_dim]
-            jafar_input = torch.cat([geo_blobs, extra_feat], dim=-1)
-        else:
-            jafar_input = geo_blobs
+        # ------------------------------------------------------------------
+        # 4. 执行 JAFAR
+        # ------------------------------------------------------------------
+        # Prepare Data
+        raw_q = raw_input[query_indices]
+        sem_q_sub = sem_feat[query_indices]
         
-        target_phys = j_feat_raw.contiguous().view(-1, j_feat_raw.shape[-1])
+        raw_k = raw_input[anchor_indices]
+        sem_k_sub = sem_feat[anchor_indices]
         
-        refined_logits, affinity, k_idx, refined_feat, bdy_logits, rec_phys = self.geo_stream(
-            xyz=iso_coord,
-            jafar_feat=jafar_input, 
-            sem_feat=sem_feat_dense,
-            knn_idx=shared_knn_idx 
+        # Fake Batching (B=1)
+        logits_sp, rec_sp = self.geo_stream(
+            feat_q=raw_q.unsqueeze(0), 
+            sem_q=sem_q_sub.unsqueeze(0),
+            feat_k=raw_k.unsqueeze(0), 
+            sem_k=sem_k_sub.unsqueeze(0),
+            knn_idx=idx_in_anchor.unsqueeze(0)
         )
         
-        if "segment" in input_dict:
-            targets = input_dict['segment'].view(-1)
-        else:
-            targets = None
+        # ------------------------------------------------------------------
+        # 5. 结果回填与输出
+        # ------------------------------------------------------------------
+        logits_sp = logits_sp.view(-1, self.aux_head.out_features)
+        rec_sp = rec_sp.view(-1, self.jafar_in_dim)
         
-        if self.training and targets is not None:
-            valid_mask = (targets != 255)
-            if valid_mask.sum() > 0:
-                self.update_prototypes(refined_feat[valid_mask].detach(), targets[valid_mask])
-            else:
-                dummy_feat = torch.zeros((0, refined_feat.shape[-1]), device=refined_feat.device)
-                dummy_label = torch.zeros((0,), dtype=torch.long, device=targets.device)
-                self.update_prototypes(dummy_feat, dummy_label)
-
+        final_logits = aux_logits.clone()
+        final_logits[query_indices] = logits_sp
+        
         output_dict = {
-            "seg_logits": refined_logits,
-            "refined_logits": refined_logits,
+            "seg_logits": final_logits,
             "aux_logits": aux_logits,
-            "bdy_logits": bdy_logits,
-            "refined_feat": refined_feat,
-            "affinity": affinity, 
-            "k_idx": k_idx,
-            "input_jafar_feat": jafar_input, 
-            "target": targets,
-            "prototypes": self.prototypes,
-            "rec_phys": rec_phys,  
-            "target_phys": target_phys  
+            "rec_pred": rec_sp,          
+            "rec_target": raw_q,    # Reconstruction Target is Raw Input
+            "target": input_dict.get('segment')
         }
 
-        if self.criteria is not None and targets is not None:
-            output_dict['loss'] = self.criteria(output_dict)
-        elif self.criteria is not None:
-            output_dict['loss'] = torch.tensor(0.0, device=refined_logits.device)
-            
+        if self.criteria is not None:
+             output_dict['loss'] = self.criteria(output_dict)
+             
         return output_dict

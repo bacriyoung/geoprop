@@ -34,21 +34,17 @@ model = dict(
     type="GeoPTV3",
     geo_input_dim=6,
     num_classes=num_classes,
-    num_points=198000, 
+    query_ratio=0.25,  # 新增: 难点比例
+    anchor_ratio=0.5,  # 新增: 锚点比例
     criteria=dict(
         type="GeoCoTrainLoss", 
-        lambda_main=10.0, 
-        lambda_aux=4.0,   
-        lambda_aff=1.0, 
-        lambda_rec=20.0,
-        lambda_dist=0.1,
-        lambda_bdy=0.1,
-        warmup_epochs=10, 
+        lambda_main=1.0, 
+        lambda_aux=1.0,    
+        lambda_rec=10.0, # 提高重建权重，因为它是唯一的自监督信号
         ignore_index=ignore_index,
-        # S3DIS: Ceiling/Floor/Wall are dominant, Beam/Column are rare.
         class_weights=[
-            1.00, 1.00, 1.00, 3.37, 3.70, 3.91, 1.44,  # ceiling, floor, wall, beam, column, window, door
-            2.32, 1.74, 10.0, 1.66, 6.53, 1.00        # table, chair, sofa, bookcase, board, clutter
+            1.00, 1.00, 1.00, 3.37, 3.70, 3.91, 1.44, 
+            2.32, 1.74, 10.0, 1.66, 6.53, 1.00 
         ]
     ),
     backbone_ptv3_cfg=dict(
