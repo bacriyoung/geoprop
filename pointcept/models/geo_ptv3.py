@@ -299,15 +299,22 @@ class GeoPTV3(nn.Module):
         final_logits = aux_logits.clone()
         final_logits[query_indices] = logits_sp
         
+        # 获取 Target，可能为 None (例如在测试集或验证集的 fragment 中)
+        targets = input_dict.get('segment')
+
         output_dict = {
             "seg_logits": final_logits,
             "aux_logits": aux_logits,
             "rec_pred": rec_sp,          
-            "rec_target": raw_q,    # Reconstruction Target is Raw Input
-            "target": input_dict.get('segment')
+            "rec_target": raw_q,    
+            "target": targets
         }
 
-        if self.criteria is not None:
+        # [修复点]：只有当 criteria 存在 且 targets 不为 None 时才计算 Loss
+        if self.criteria is not None and targets is not None:
              output_dict['loss'] = self.criteria(output_dict)
+        elif self.criteria is not None:
+             # 如果没有 target (验证/测试阶段)，给一个 0.0 的 dummy loss 防止报错
+             output_dict['loss'] = torch.tensor(0.0, device=final_logits.device)
              
         return output_dict
