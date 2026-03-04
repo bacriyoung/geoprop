@@ -43,21 +43,16 @@ class_weights = [
 # -------------------------------------------------------------------------
 model = dict(
     type="GeoPTV3",
-    # [Important] Input Dim = 6 (3 Coord + 3 Intensity replicated)
-    geo_input_dim=6, 
+    geo_input_dim=6,
     num_classes=num_classes,
-    # Match PTv2 crop size
-    num_points=120000, 
+    query_ratio=0.25,  # 新增: 难点比例
+    anchor_ratio=0.5,  # 新增: 锚点比例
     criteria=dict(
         type="GeoCoTrainLoss", 
-        lambda_main=10.0, 
-        lambda_aux=1.0,   
-        lambda_aff=1.0, 
-        lambda_rec=20.0, # High weight for geometric reconstruction
-        lambda_dist=0.1,
-        lambda_bdy=0.1,
-        warmup_epochs=5, 
-        ignore_index=ignore_index, 
+        lambda_main=1.0, 
+        lambda_aux=1.0,    
+        lambda_rec=10.0, # 提高重建权重，因为它是唯一的自监督信号
+        ignore_index=ignore_index,
         class_weights=class_weights 
     ),
     backbone_ptv3_cfg=dict(
