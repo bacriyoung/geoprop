@@ -178,7 +178,7 @@ data = dict(
 
     test=dict(
         type=dataset_type,
-        split="test", 
+        split="val", 
         data_root=data_root,
         num_points=120000,
         voxel_size=0.05,
