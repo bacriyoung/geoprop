@@ -23,6 +23,6 @@ from .s3dis import S3DISDataset
 # dataloader
 from .dataloader import MultiDatasetDataloader
 
-from .s3dis_co_train import S3DISCoTrainDataset
-from .scannet_geo import ScanNetGeoDataset
-from .semantickitti_geo import SemanticKITTIGeoDataset
+from .s3dis_afanet import S3DISAFANetDataset
+from .scannet_afanet import ScanNetAFANetDataset
+from .semantickitti_afanet import SemanticKITTIAFANetDataset

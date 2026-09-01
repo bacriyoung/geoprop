@@ -24,7 +24,7 @@ save_freq = None
 enable_amp = True 
 empty_cache = False
 
-# [Critical] Disable Mix3D for GeoProp (Geometric Consistency)
+# Disable Mix3D as specified by the AFA-Net evaluation protocol.
 mix_prob = 0.0 
 
 # Dataset Parameters
@@ -39,16 +39,16 @@ class_weights = [
 ]
 
 # -------------------------------------------------------------------------
-# Model Settings (GeoPTV3)
+# AFA-Net model settings
 # -------------------------------------------------------------------------
 model = dict(
-    type="GeoPTV3",
-    geo_input_dim=6,
+    type="AFANet",
+    input_dim=4,
     num_classes=num_classes,
-    query_ratio=0.25,  # 新增: 难点比例
-    anchor_ratio=0.5,  # 新增: 锚点比例
+    query_ratio=0.25,
+    neighborhood_size=16,
     criteria=dict(
-        type="GeoCoTrainLoss", 
+        type="AFANetLoss",
         lambda_main=1.0, 
         lambda_aux=1.0,    
         lambda_rec=10.0, # 提高重建权重，因为它是唯一的自监督信号
@@ -57,7 +57,9 @@ model = dict(
     ),
     backbone_ptv3_cfg=dict(
         type="PointTransformerV3",
-        in_channels=6, # Coord + Intensity (3ch)
+        # PTv3 keeps the legacy six-channel input (XYZ + replicated intensity);
+        # AFA-Net receives the paper-defined four-channel XYZ + intensity input.
+        in_channels=6,
         num_classes=num_classes,
         order=["z", "z-trans", "hilbert", "hilbert-trans"],
         stride=(2, 2, 2, 2),
@@ -111,12 +113,12 @@ scheduler = dict(
     final_div_factor=100.0,
 )
 
-param_dicts = [dict(keyword="sem_stream", lr=lr * 0.1)]
+param_dicts = [dict(keyword="backbone", lr=lr * 0.1)]
 
 # -------------------------------------------------------------------------
 # Data Settings
 # -------------------------------------------------------------------------
-dataset_type = "SemanticKITTIGeoDataset"
+dataset_type = "SemanticKITTIAFANetDataset"
 data_root = "data/semantic_kitti"
 
 data = dict(

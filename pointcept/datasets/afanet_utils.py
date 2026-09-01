@@ -1,9 +1,9 @@
 import numpy as np
 import torch
 
-class GeoDatasetMixin:
+class AFANetDatasetMixin:
     """
-    A mixin class containing shared logic for GeoProp datasets (S3DIS/ScanNet).
+    Shared data preparation for AFA-Net experiments.
     It handles:
     1. Training Data Augmentation (Rotation, Jitter, Color) - Aligned with PTv3
     2. Test-Time Augmentation (TTA) - Combinatorial Strategy
@@ -30,7 +30,7 @@ class GeoDatasetMixin:
         - Flipping
         - Random Jitter (Gaussian Noise)
         - Chromatic Augmentation (Jitter, AutoContrast, Translation)
-        - Color Drop (GeoProp specific)
+        - Attribute drop used by the paper's training protocol
         """
         
         # 1. Z-Axis Rotation: [-1, 1] * pi (i.e., -180 to 180 degrees) with p=0.5
@@ -84,7 +84,7 @@ class GeoDatasetMixin:
             noise = np.random.randn(1).astype(np.float32)
             color = color * (1 + chromatic_jitter_std * noise)
 
-        # 8. Color Drop (GeoProp specific strategy for weak supervision)
+        # 8. Attribute drop used by the sparse-supervision training protocol
         if np.random.random() < color_drop_prob:
             color[:] = 0.0
 

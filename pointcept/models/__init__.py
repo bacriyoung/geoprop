@@ -12,8 +12,8 @@ from .point_transformer_v3 import *
 # from .octformer import *
 # from .oacnns import *
 
-# Semantic Segmentation (只保留你的)
-from .geo_ptv3 import GeoPTV3
+# AFA-Net semantic segmentation
+from .afanet import AFANet
 
 # Instance Segmentation (全部注释/删除)
 # from .point_group import *

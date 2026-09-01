@@ -28,16 +28,16 @@ num_classes = 13
 ignore_index = 255 
 
 # -------------------------------------------------------------------------
-# Model Settings (GeoPTV3)
+# AFA-Net model settings
 # -------------------------------------------------------------------------
 model = dict(
-    type="GeoPTV3",
-    geo_input_dim=6,
+    type="AFANet",
+    input_dim=6,
     num_classes=num_classes,
-    query_ratio=0.25,  # 新增: 难点比例
-    anchor_ratio=0.5,  # 新增: 锚点比例
+    query_ratio=0.25,
+    neighborhood_size=16,
     criteria=dict(
-        type="GeoCoTrainLoss", 
+        type="AFANetLoss",
         lambda_main=1.0, 
         lambda_aux=1.0,    
         lambda_rec=10.0, # 提高重建权重，因为它是唯一的自监督信号
@@ -103,7 +103,7 @@ scheduler = dict(
     final_div_factor=1000.0,
 )
 
-param_dicts = [dict(keyword="sem_stream", lr=lr * 0.1)]
+param_dicts = [dict(keyword="backbone", lr=lr * 0.1)]
 
 # -------------------------------------------------------------------------
 # Data Settings (Modified for Consistency)
@@ -124,7 +124,7 @@ data = dict(
     # Train: Random KNN Crop 
     # -------------------------------------------------------------
     train=dict(
-        type="S3DISCoTrainDataset",
+        type="S3DISAFANetDataset",
         split="train",
         data_root="data/s3dis",
         num_points=198000, 
@@ -149,7 +149,7 @@ data = dict(
     # Val: Sliding Window 
     # -------------------------------------------------------------
     val=dict(
-        type="S3DISCoTrainDataset",
+        type="S3DISAFANetDataset",
         split="val",
         data_root="data/s3dis",
         num_points=198000, 
@@ -167,7 +167,7 @@ data = dict(
     # Test: Sliding Window 
     # -------------------------------------------------------------
     test=dict(
-        type="S3DISCoTrainDataset",
+        type="S3DISAFANetDataset",
         split="Area_5",
         data_root="data/s3dis",
         num_points=198000,

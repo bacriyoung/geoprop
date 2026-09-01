@@ -6,10 +6,10 @@ from torch.utils.data import Dataset
 from pointcept.utils.logger import get_root_logger
 from .builder import DATASETS
 from .transform import Compose, TRANSFORMS
-from .geo_utils import GeoDatasetMixin
+from .afanet_utils import AFANetDatasetMixin
 
 @DATASETS.register_module()
-class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
+class SemanticKITTIAFANetDataset(Dataset, AFANetDatasetMixin):
     def __init__(self,
                  split='train',
                  data_root='data/semantic_kitti',
@@ -269,17 +269,14 @@ class SemanticKITTIGeoDataset(Dataset, GeoDatasetMixin):
         ptv3_feat = torch.cat([ptv3_coord, ptv3_color], dim=1)
         grid_coord = (ptv3_coord / self.voxel_size).int()
 
-        iso_coord = ptv3_coord.clone()
-        jafar_color = ptv3_color 
-        jafar_feat = torch.cat([jafar_color, norm_coord], dim=1)
+        # The paper uses one LiDAR-intensity attribute, not a replicated RGB proxy.
+        afanet_input = torch.cat([norm_coord, ptv3_color[:, :1]], dim=1)
 
         input_dict = dict(
             coord=ptv3_coord, 
             grid_coord=grid_coord,
             ptv3_feat=ptv3_feat,     
-            jafar_coord=coord_t,
-            jafar_feat=jafar_feat,
-            iso_coord=iso_coord,
+            afanet_input=afanet_input,
             index=torch.from_numpy(indices).long(), 
             offset=torch.tensor([coord_t.shape[0]], dtype=torch.int32) 
         )

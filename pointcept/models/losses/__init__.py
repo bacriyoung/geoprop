@@ -3,4 +3,4 @@ from .builder import build_criteria, LOSSES
 from .misc import CrossEntropyLoss, SmoothCELoss, DiceLoss, FocalLoss, BinaryFocalLoss
 from .lovasz import LovaszLoss
 
-from .geo_loss import GeoCoTrainLoss
+from .afanet_loss import AFANetLoss

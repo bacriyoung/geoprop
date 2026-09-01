@@ -25,7 +25,7 @@ save_freq = None
 enable_amp = True 
 empty_cache = False
 
-# [Critical] Disable Mix3D for GeoProp (Weak Supervision requirement)
+# Disable Mix3D as specified by the AFA-Net evaluation protocol.
 mix_prob = 0.0 
 
 # Dataset Parameters
@@ -33,16 +33,16 @@ num_classes = 20
 ignore_index = 255 
 
 # -------------------------------------------------------------------------
-# Model Settings (GeoPTV3)
+# AFA-Net model settings
 # -------------------------------------------------------------------------
 model = dict(
-    type="GeoPTV3",
-    geo_input_dim=6,
+    type="AFANet",
+    input_dim=6,
     num_classes=num_classes,
-    query_ratio=0.25,  # 新增: 难点比例
-    anchor_ratio=0.5,  # 新增: 锚点比例
+    query_ratio=0.25,
+    neighborhood_size=16,
     criteria=dict(
-        type="GeoCoTrainLoss", 
+        type="AFANetLoss",
         lambda_main=1.0, 
         lambda_aux=1.0,    
         lambda_rec=10.0, # 提高重建权重，因为它是唯一的自监督信号
@@ -106,7 +106,7 @@ scheduler = dict(
     final_div_factor=1000.0,
 )
 
-param_dicts = [dict(keyword="sem_stream", lr=lr * 0.1)]
+param_dicts = [dict(keyword="backbone", lr=lr * 0.1)]
 
 # -------------------------------------------------------------------------
 # Data Settings
@@ -126,10 +126,10 @@ data = dict(
     ],
     
     # -------------------------------------------------------------
-    # Train: ScanNetGeoDataset with KNN Crop
+    # Train: AFA-Net ScanNet dataset with KNN crops
     # -------------------------------------------------------------
     train=dict(
-        type="ScanNetGeoDataset",
+        type="ScanNetAFANetDataset",
         split="train",
         data_root="data/scannet",
         num_points=102400, 
@@ -154,7 +154,7 @@ data = dict(
     # Val: Sliding Window
     # -------------------------------------------------------------
     val=dict(
-        type="ScanNetGeoDataset",
+        type="ScanNetAFANetDataset",
         split="val",
         data_root="data/scannet",
         num_points=102400, 
@@ -172,7 +172,7 @@ data = dict(
     # Test: Sliding Window 
     # -------------------------------------------------------------
     test=dict(
-        type="ScanNetGeoDataset",
+        type="ScanNetAFANetDataset",
         split="val", 
         data_root="data/scannet",
         num_points=102400,
